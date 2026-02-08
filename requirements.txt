@@ -1,0 +1,7 @@
+fastapi==0.104.1
+uvicorn==0.24.0
+pyyaml==6.0.1
+MetaTrader5==5.0.45
+telethon==1.31.1
+pybit==5.5.0
+pydantic==2.5.2
