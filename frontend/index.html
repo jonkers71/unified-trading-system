@@ -5,71 +5,122 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Unified Trading System | Professional Mission Control</title>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap"
+        rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         :root {
-            --bg-dark: #0f172a;
-            --card-bg: #1e293b;
+            --bg: #030712;
+            --sidebar: #0a0f1d;
+            --card: rgba(17, 24, 39, 0.7);
+            --card-hover: rgba(31, 41, 55, 0.8);
             --accent: #3b82f6;
+            --accent-glow: rgba(59, 130, 246, 0.5);
             --success: #10b981;
             --error: #ef4444;
-            --text: #f8fafc;
-            --text-dim: #94a3b8;
-            --border: rgba(255, 255, 255, 0.1);
+            --warning: #f59e0b;
+            --text-primary: #f8fafc;
+            --text-secondary: #94a3b8;
+            --border: rgba(255, 255, 255, 0.08);
+            --glass: rgba(255, 255, 255, 0.03);
+        }
+
+        * {
+            box-sizing: border-box;
+            scrollbar-width: thin;
+            scrollbar-color: var(--border) transparent;
         }
 
         body {
-            background-color: var(--bg-dark);
-            color: var(--text);
-            font-family: 'Inter', -apple-system, sans-serif;
+            background-color: var(--bg);
+            color: var(--text-primary);
+            font-family: 'Outfit', sans-serif;
             margin: 0;
             display: flex;
             height: 100vh;
             overflow: hidden;
+            background-image:
+                radial-gradient(circle at 20% 20%, rgba(59, 130, 246, 0.05) 0%, transparent 40%),
+                radial-gradient(circle at 80% 80%, rgba(16, 185, 129, 0.05) 0%, transparent 40%);
         }
 
         /* Sidebar */
         nav {
-            width: 260px;
-            background: rgba(15, 23, 42, 0.9);
-            backdrop-filter: blur(10px);
+            width: 280px;
+            background: var(--sidebar);
             border-right: 1px solid var(--border);
-            padding: 2rem;
+            padding: 2.5rem 1.5rem;
             display: flex;
             flex-direction: column;
             z-index: 100;
         }
 
         .brand {
-            font-size: 1.25rem;
+            font-size: 1.5rem;
             font-weight: 800;
-            color: var(--accent);
-            margin-bottom: 2.5rem;
-            letter-spacing: -0.025em;
-        }
-
-        .nav-item {
-            padding: 0.875rem 1rem;
-            margin-bottom: 0.5rem;
-            border-radius: 0.75rem;
-            cursor: pointer;
-            transition: all 0.2s;
-            color: var(--text-dim);
-            font-weight: 500;
+            background: linear-gradient(135deg, #fff 0%, #3b82f6 100%);
+            -webkit-background-clip: text;
+            background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 3rem;
             display: flex;
             align-items: center;
             gap: 0.75rem;
         }
 
-        .nav-item:hover,
-        .nav-item.active {
-            background: var(--card-bg);
+        .brand::before {
+            content: '';
+            width: 12px;
+            height: 12px;
+            background: var(--accent);
+            border-radius: 2px;
+            box-shadow: 0 0 15px var(--accent-glow);
+        }
+
+        .nav-group {
+            margin-bottom: 2rem;
+        }
+
+        .nav-label {
+            font-size: 0.7rem;
+            font-weight: 700;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+            margin-bottom: 1rem;
+            padding-left: 1rem;
+        }
+
+        .nav-item {
+            padding: 0.85rem 1rem;
+            margin-bottom: 0.4rem;
+            border-radius: 0.75rem;
+            cursor: pointer;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            color: var(--text-secondary);
+            font-weight: 500;
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            border: 1px solid transparent;
+        }
+
+        .nav-item:hover {
+            background: var(--glass);
             color: white;
-            transform: translateX(4px);
+            border-color: var(--border);
         }
 
         .nav-item.active {
             background: rgba(59, 130, 246, 0.1);
             color: var(--accent);
+            border-color: rgba(59, 130, 246, 0.2);
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
+        }
+
+        .nav-item i {
+            font-size: 1.1rem;
         }
 
         /* Main Content */
@@ -77,161 +128,318 @@
             flex: 1;
             padding: 2.5rem;
             overflow-y: auto;
-            background: radial-gradient(circle at top right, rgba(59, 130, 246, 0.05), transparent);
+            position: relative;
         }
 
-        .header-row {
+        .header {
             display: flex;
             justify-content: space-between;
-            align-items: center;
-            margin-bottom: 2rem;
-        }
-
-        h2 {
-            margin: 0;
-            font-weight: 700;
-            letter-spacing: -0.025em;
-        }
-
-        .stats-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-            gap: 1.5rem;
+            align-items: flex-end;
             margin-bottom: 2.5rem;
         }
 
-        .card {
-            background: var(--card-bg);
+        .header h1 {
+            margin: 0;
+            font-size: 2.25rem;
+            font-weight: 800;
+            letter-spacing: -0.02em;
+        }
+
+        .header p {
+            margin: 0.5rem 0 0 0;
+            color: var(--text-secondary);
+            font-size: 1.1rem;
+        }
+
+        .pulse {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            background: var(--success);
+            border-radius: 50%;
+            margin-right: 8px;
+            box-shadow: 0 0 10px var(--success);
+            animation: pulse-ring 2s infinite;
+        }
+
+        @keyframes pulse-ring {
+            0% {
+                transform: scale(0.95);
+                opacity: 0.8;
+            }
+
+            50% {
+                transform: scale(1.1);
+                opacity: 1;
+            }
+
+            100% {
+                transform: scale(0.95);
+                opacity: 0.8;
+            }
+        }
+
+        /* Stats Blocks */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 1.5rem;
+            margin-bottom: 2rem;
+        }
+
+        .stat-card {
+            background: var(--card);
+            backdrop-filter: blur(12px);
             border: 1px solid var(--border);
             padding: 1.5rem;
             border-radius: 1.25rem;
-            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
+            transition: all 0.3s;
+            position: relative;
+            overflow: hidden;
         }
 
-        .stat-label {
+        .stat-card::after {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 4px;
+            height: 100%;
+            background: var(--accent);
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+
+        .stat-card:hover::after {
+            opacity: 1;
+        }
+
+        .stat-info .label {
             font-size: 0.75rem;
             font-weight: 600;
-            color: var(--text-dim);
+            color: var(--text-secondary);
             text-transform: uppercase;
             letter-spacing: 0.05em;
         }
 
-        .stat-value {
-            font-size: 1.75rem;
+        .stat-info .value {
+            font-size: 1.5rem;
             font-weight: 700;
             margin-top: 0.5rem;
+            display: flex;
+            align-items: baseline;
+            gap: 0.5rem;
         }
 
-        .status-online {
-            color: var(--success);
+        .stat-info .sub-value {
+            font-size: 0.8rem;
+            font-family: 'JetBrains Mono', monospace;
+            color: var(--text-secondary);
         }
 
-        .status-offline {
-            color: var(--error);
-        }
-
-        /* Settings specific styles */
-        .settings-grid {
+        /* Charts & Lists Area */
+        .content-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
-            gap: 2rem;
+            grid-template-columns: 2fr 1fr;
+            gap: 1.5rem;
+            margin-bottom: 2rem;
         }
 
-        .setting-group {
+        .card {
+            background: var(--card);
+            backdrop-filter: blur(12px);
+            border: 1px solid var(--border);
+            border-radius: 1.5rem;
+            padding: 1.5rem;
+        }
+
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
             margin-bottom: 1.5rem;
-            border-bottom: 1px solid var(--border);
-            padding-bottom: 1.5rem;
         }
 
-        .setting-group:last-child {
-            border-bottom: none;
+        .card-header h3 {
+            margin: 0;
+            font-size: 1.25rem;
+            font-weight: 700;
         }
 
-        .setting-label {
+        /* Channels List */
+        .channel-list {
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+        }
+
+        .channel-item {
+            background: var(--glass);
+            padding: 1rem;
+            border-radius: 0.75rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border: 1px solid transparent;
+            transition: all 0.2s;
+        }
+
+        .channel-item:hover {
+            border-color: var(--border);
+            background: rgba(255, 255, 255, 0.05);
+        }
+
+        .channel-info {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+        }
+
+        .channel-icon {
+            width: 36px;
+            height: 36px;
+            background: var(--accent);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: 700;
+            font-size: 0.8rem;
+        }
+
+        .channel-details .name {
+            font-weight: 600;
+            font-size: 0.95rem;
             display: block;
+        }
+
+        .channel-details .id {
+            font-size: 0.75rem;
+            color: var(--text-secondary);
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .badge {
+            padding: 0.25rem 0.6rem;
+            border-radius: 2rem;
+            font-size: 0.7rem;
+            font-weight: 700;
+            text-transform: uppercase;
+        }
+
+        .badge-success {
+            background: rgba(16, 185, 129, 0.1);
+            color: var(--success);
+            border: 1px solid rgba(16, 185, 129, 0.2);
+        }
+
+        /* Tables */
+        .trade-table {
+            width: 100%;
+            border-collapse: separate;
+            border-spacing: 0 0.5rem;
+        }
+
+        .trade-table th {
+            text-align: left;
+            padding: 0.75rem 1rem;
+            font-size: 0.7rem;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .trade-table tr {
+            background: var(--glass);
+            transition: transform 0.2s;
+        }
+
+        .trade-table tr:hover {
+            background: rgba(255, 255, 255, 0.05);
+            transform: scale(1.002);
+        }
+
+        .trade-table td {
+            padding: 1rem;
+            font-size: 0.9rem;
+            border-top: 1px solid var(--border);
+            border-bottom: 1px solid var(--border);
+        }
+
+        .trade-table td:first-child {
+            border-left: 1px solid var(--border);
+            border-radius: 0.75rem 0 0 0.75rem;
+        }
+
+        .trade-table td:last-child {
+            border-right: 1px solid var(--border);
+            border-radius: 0 0.75rem 0.75rem 0;
+        }
+
+        .price-up {
+            color: var(--success);
+            font-weight: 600;
+        }
+
+        .price-down {
+            color: var(--error);
+            font-weight: 600;
+        }
+
+        /* Inputs */
+        .setting-field {
+            margin-bottom: 1.5rem;
+        }
+
+        .setting-field label {
+            display: block;
+            font-size: 0.85rem;
             font-weight: 600;
             margin-bottom: 0.5rem;
-            font-size: 0.9rem;
+            color: var(--text-secondary);
         }
 
-        .setting-desc {
-            font-size: 0.75rem;
-            color: var(--text-dim);
-            margin-bottom: 1rem;
-        }
-
-        .input-row {
-            display: flex;
+        .field-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
             gap: 1rem;
-            align-items: center;
         }
 
         input,
         select {
-            background: #0f172a;
+            background: rgba(0, 0, 0, 0.3);
             border: 1px solid var(--border);
             color: white;
-            padding: 0.75rem 1rem;
+            padding: 0.8rem 1rem;
             border-radius: 0.75rem;
             outline: none;
             width: 100%;
+            font-family: 'JetBrains Mono', monospace;
+            transition: border-color 0.2s;
         }
 
         input:focus {
             border-color: var(--accent);
+            box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
         }
 
         .btn {
             background: var(--accent);
             color: white;
             border: none;
-            padding: 0.75rem 1.5rem;
+            padding: 0.8rem 1.5rem;
             border-radius: 0.75rem;
             cursor: pointer;
-            font-weight: 600;
-            transition: all 0.2s;
+            font-weight: 700;
+            transition: all 0.3s;
+            text-transform: uppercase;
+            letter-spacing: 0.02em;
         }
 
         .btn:hover {
-            opacity: 0.9;
-            transform: translateY(-1px);
-        }
-
-        .btn-outline {
-            background: transparent;
-            border: 1px solid var(--border);
-            color: var(--text-dim);
-        }
-
-        .btn-outline:hover {
-            background: var(--border);
-            color: white;
-        }
-
-        /* Tables */
-        .trade-table {
-            width: 100%;
-            border-collapse: collapse;
-            margin-top: 1rem;
-        }
-
-        .trade-table th {
-            text-align: left;
-            padding: 1rem;
-            font-size: 0.75rem;
-            color: var(--text-dim);
-            text-transform: uppercase;
-            border-bottom: 1px solid var(--border);
-        }
-
-        .trade-table td {
-            padding: 1rem;
-            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-            font-size: 0.9rem;
-        }
-
-        .tab-content {
-            animation: fadeIn 0.3s ease-out;
+            background: #2563eb;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 15px rgba(59, 130, 246, 0.4);
         }
 
         @keyframes fadeIn {
@@ -245,66 +453,120 @@
                 transform: translateY(0);
             }
         }
+
+        .tab-content {
+            animation: fadeIn 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+        }
     </style>
 </head>
 
 <body>
     <nav>
-        <div class="brand">UNIFIED ENGINE</div>
-        <div class="nav-item active" onclick="showTab('dashboard')">Dashboard</div>
-        <div class="nav-item" onclick="showTab('positions')">Live Positions</div>
-        <div class="nav-item" onclick="showTab('signals')">Signal History</div>
-        <div class="nav-item" onclick="showTab('settings')">Control Center</div>
+        <div class="brand">MISSION CONTROL</div>
+
+        <div class="nav-group">
+            <div class="nav-label">Operations</div>
+            <div class="nav-item active" onclick="showTab('dashboard')">Terminal</div>
+            <div class="nav-item" onclick="showTab('positions')">Live Feeds</div>
+            <div class="nav-item" onclick="showTab('signals')">Comms Log</div>
+        </div>
+
+        <div class="nav-group">
+            <div class="nav-label">configuration</div>
+            <div class="nav-item" onclick="showTab('settings')">Risk Parameters</div>
+            <div class="nav-item" onclick="showTab('channels')">Signal Nodes</div>
+        </div>
+
         <div style="margin-top: auto;">
-            <div class="nav-item" style="color: var(--error)">EMERGENCY STOP</div>
+            <div class="nav-item"
+                style="color: var(--error); background: rgba(239, 68, 68, 0.05); border-color: rgba(239, 68, 68, 0.2);">
+                <span>ABORT MISSION</span>
+            </div>
         </div>
     </nav>
 
     <main>
         <!-- Dashboard Tab -->
         <div id="dashboard" class="tab-content">
-            <div class="header-row">
-                <h2>Mission Overview</h2>
-                <div class="btn btn-outline">Last Updated: Just Now</div>
+            <div class="header">
+                <div>
+                    <h1>System Overview</h1>
+                    <p><span class="pulse"></span> Tactical Trading Operations Active</p>
+                </div>
+                <div class="btn"
+                    style="background: var(--glass); border: 1px solid var(--border); color: var(--text-secondary);">
+                    NODE: 192.168.1.104
+                </div>
             </div>
+
             <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-info">
+                        <div class="label">Trading System</div>
+                        <div class="value status-online" id="status-engine">OPERATIONAL</div>
+                        <div class="sub-value">Engine V5.5.0-STABLE</div>
+                    </div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-info">
+                        <div class="label">MT5 Bridge</div>
+                        <div class="value" id="status-mt5">0ms</div>
+                        <div class="sub-value" id="status-mt5-text">PENDING</div>
+                    </div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-info">
+                        <div class="label">Bybit Engine</div>
+                        <div class="value" id="status-bybit">0ms</div>
+                        <div class="sub-value" id="status-bybit-text">PENDING</div>
+                    </div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-info">
+                        <div class="label">Session P/L</div>
+                        <div class="value" id="daily-profit">$0.00</div>
+                        <div class="sub-value">Current Growth: 0.0%</div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="content-grid">
                 <div class="card">
-                    <div class="stat-label">System Hardware</div>
-                    <div class="stat-value status-online" id="status-engine">PROXMOX ONLINE</div>
+                    <div class="card-header">
+                        <h3>Performance Matrix</h3>
+                    </div>
+                    <canvas id="performanceChart" height="200" style="max-height: 250px"></canvas>
                 </div>
                 <div class="card">
-                    <div class="stat-label">MT5 Connection</div>
-                    <div class="stat-value status-online" id="status-mt5">CONNECTED</div>
-                </div>
-                <div class="card">
-                    <div class="stat-label">Bybit Engine</div>
-                    <div class="stat-value status-online" id="status-bybit">BYBIT TESTNET</div>
-                </div>
-                <div class="card">
-                    <div class="stat-label">Daily Balance Delta</div>
-                    <div class="stat-value status-online" id="daily-profit">+$142.50</div>
+                    <div class="card-header">
+                        <h3>Active Comms Nodes</h3>
+                    </div>
+                    <div class="channel-list" id="monitored-channels">
+                        <!-- Channels populated by JS -->
+                        <div style="text-align:center; padding: 2rem; color: var(--text-secondary)">Syncing Channels...
+                        </div>
+                    </div>
                 </div>
             </div>
 
             <div class="card">
-                <h3>Incoming Signals (Real-time)</h3>
+                <div class="card-header">
+                    <h3>Recent Executions</h3>
+                </div>
                 <table class="trade-table">
                     <thead>
                         <tr>
-                            <th>Time</th>
-                            <th>Symbol</th>
-                            <th>Type</th>
-                            <th>Target</th>
-                            <th>Status/Executor</th>
+                            <th>UTC Time</th>
+                            <th>Instrument</th>
+                            <th>Vector</th>
+                            <th>Objective</th>
+                            <th>Status/Hash</th>
                         </tr>
                     </thead>
                     <tbody id="signal-log">
                         <tr>
-                            <td>12:30:05</td>
-                            <td>XAUUSD</td>
-                            <td>BUY</td>
-                            <td>TP2</td>
-                            <td><span style="color:var(--success)">●</span> MT5: Executed | Hybrid Mode</td>
+                            <td colspan="5" style="text-align:center; padding: 2rem; color: var(--text-secondary)">
+                                Scanning for signals...</td>
                         </tr>
                     </tbody>
                 </table>
@@ -313,113 +575,51 @@
 
         <!-- Settings Tab -->
         <div id="settings" class="tab-content" style="display:none">
-            <div class="header-row">
-                <h2>Control Center</h2>
-                <button class="btn" onclick="saveSettings()">Apply Global Config</button>
+            <div class="header">
+                <div>
+                    <h1>Risk Parameters</h1>
+                    <p>Configure automated execution strategies</p>
+                </div>
+                <button class="btn" onclick="saveSettings()">Upload Config</button>
             </div>
 
-            <div class="settings-grid">
-                <!-- Risk & Symbols -->
+            <div class="content-grid" style="grid-template-columns: 1fr 1fr">
                 <div class="card">
-                    <h3>Risk Management</h3>
-                    <div class="setting-group">
-                        <label class="setting-label">Global Risk Percentage</label>
-                        <div class="setting-desc">Percentage of account balance to risk per trade.</div>
-                        <input type="number" step="0.1" value="1.0">
+                    <div class="card-header">
+                        <h3>Allocation & Risk</h3>
                     </div>
-                    <div class="setting-group">
-                        <label class="setting-label">Spread Control (Forex / Gold)</label>
-                        <div class="setting-desc">Max allowed spread in Pips. Rejects orders above limit.</div>
-                        <div class="input-row">
-                            <input type="number" placeholder="Forex (e.g. 5)">
-                            <input type="number" placeholder="Gold (e.g. 800)">
-                        </div>
+                    <div class="setting-field">
+                        <label>Global Risk % per Trade</label>
+                        <input type="number" id="risk-percent" step="0.1" value="1.0">
                     </div>
-                    <div class="setting-group">
-                        <label class="setting-label">Symbol Suffixes</label>
-                        <div class="setting-desc">Broker specific suffixes (e.g. +, .pro, .raw)</div>
-                        <input type="text" placeholder="e.g. +">
+                    <div class="setting-field">
+                        <label>Execution Mode</label>
+                        <select id="tp-mode">
+                            <option value="hybrid">HYBRID: Partial TP1 -> BE -> Runner</option>
+                            <option value="split">SPLIT: 3 Decentralized Positions</option>
+                            <option value="sniper">SNIPER: Single Objective Lock</option>
+                        </select>
                     </div>
                 </div>
-
-                <!-- TP Management -->
                 <div class="card">
-                    <h3>Take Profit System</h3>
-                    <div class="setting-group">
-                        <label class="setting-label">Execution Mode</label>
-                        <div class="setting-desc">How positions are managed as they hit targets.</div>
-                        <select id="tp-mode" style="margin-bottom:1rem">
-                            <option value="hybrid">Hybrid (Partial Close at TP1 -> Move to BE -> Run to Final)</option>
-                            <option value="split">Split (Open 3 Separate Trade Positions)</option>
-                            <option value="sniper">Sniper (Single Trade focusing on Final Target)</option>
-                        </select>
-
-                        <label class="setting-label">Final Target</label>
-                        <div class="setting-desc">The ultimate goal for Hybrid and Sniper modes.</div>
+                    <div class="card-header">
+                        <h3>Protection Protocols</h3>
+                    </div>
+                    <div class="field-row">
+                        <div class="setting-field">
+                            <label>Breakeven Buffer</label>
+                            <input type="number" id="be-buffer" value="5">
+                        </div>
+                        <div class="setting-field">
+                            <label>Trailing Distance</label>
+                            <input type="number" id="trailing-distance" value="15">
+                        </div>
+                    </div>
+                    <div class="setting-field">
+                        <label>Final Objective</label>
                         <select id="final-target">
-                            <option value="tp2">Take Profit 2</option>
-                            <option value="tp3">Take Profit 3 (Runner)</option>
-                        </select>
-                    </div>
-                    <div class="setting-group">
-                        <label class="setting-label">TP Allocation (%)</label>
-                        <div class="setting-desc">How lot size is split across TP1, TP2, TP3.</div>
-                        <div class="input-row">
-                            <input type="number" placeholder="TP1: 33%">
-                            <input type="number" placeholder="TP2: 33%">
-                            <input type="number" placeholder="TP3: 34%">
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Trade Protection -->
-                <div class="card">
-                    <h3>Protection & Trailing</h3>
-                    <div class="setting-group">
-                        <label class="setting-label">Breakeven Logic</label>
-                        <div class="setting-desc">Move SL to entry after TP1 hits. Plus buffer pips.</div>
-                        <div class="input-row">
-                            <select id="be-enabled">
-                                <option value="true">Enable BE</option>
-                                <option value="false">Disable BE</option>
-                            </select>
-                            <input type="number" id="be-buffer" placeholder="+5 Pips Buffer" value="5">
-                        </div>
-                    </div>
-                    <div class="setting-group">
-                        <label class="setting-label">Trailing Stop Mode</label>
-                        <div class="setting-desc">Dynamic SL adjustment once in profit.</div>
-                        <select id="trailing-enabled">
-                            <option value="true">TP-Based (More intelligent)</option>
-                            <option value="false">Disabled</option>
-                        </select>
-                    </div>
-                    <div class="input-row">
-                        <div style="flex:1">
-                            <label class="setting-label">Activation Pips</label>
-                            <input type="number" placeholder="20" value="20">
-                        </div>
-                        <div style="flex:1">
-                            <label class="setting-label">Trailing Dist.</label>
-                            <input type="number" id="trailing-distance" placeholder="15" value="15">
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Channel Filtering -->
-                <div class="card">
-                    <h3>Signal Channels</h3>
-                    <div class="setting-group">
-                        <label class="setting-label">Allowed Channel IDs</label>
-                        <div class="setting-desc">Comma separated list of IDs from discovery.py.</div>
-                        <input type="text" placeholder="-1001234567, -1009876543">
-                    </div>
-                    <div class="setting-group">
-                        <label class="setting-label">Gold Preset</label>
-                        <div class="setting-desc">Automatically apply wide spreads and mapping for XAUUSD.</div>
-                        <select>
-                            <option>Enabled</option>
-                            <option>Disabled</option>
+                            <option value="tp2">Target Objective 2</option>
+                            <option value="tp3">Target Objective 3</option>
                         </select>
                     </div>
                 </div>
@@ -428,6 +628,40 @@
     </main>
 
     <script>
+        let perfChart;
+        const ctx = document.getElementById('performanceChart').getContext('2d');
+
+        function initChart() {
+            perfChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: [],
+                    datasets: [{
+                        label: 'P/L Real-time',
+                        data: [],
+                        borderColor: '#3b82f6',
+                        backgroundColor: 'rgba(59, 130, 246, 0.1)',
+                        fill: true,
+                        tension: 0.4,
+                        borderWidth: 3,
+                        pointRadius: 0
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: { legend: { display: false } },
+                    scales: {
+                        x: { display: false },
+                        y: {
+                            grid: { color: 'rgba(255,255,255,0.05)' },
+                            ticks: { color: '#94a3b8', font: { family: 'JetBrains Mono' } }
+                        }
+                    }
+                }
+            });
+        }
+
         function showTab(tabId) {
             document.querySelectorAll('.tab-content').forEach(t => t.style.display = 'none');
             document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
@@ -438,9 +672,11 @@
 
         async function saveSettings() {
             const data = {
-                risk_percent: parseFloat(document.querySelector('.setting-group input[type="number"]').value),
+                risk_percent: parseFloat(document.getElementById('risk-percent').value),
                 tp_mode: document.getElementById('tp-mode').value,
-                final_target: document.getElementById('final-target').value
+                final_target: document.getElementById('final-target').value,
+                be_buffer: parseInt(document.getElementById('be-buffer').value),
+                trailing_distance: parseInt(document.getElementById('trailing-distance').value)
             };
 
             try {
@@ -450,9 +686,9 @@
                     body: JSON.stringify(data)
                 });
                 const result = await res.json();
-                alert(result.message);
+                alert("PROTOCOL UPDATED: " + result.message);
             } catch (e) {
-                alert("Failed to save settings: " + e);
+                alert("COMMUNICATION ERROR: " + e);
             }
         }
 
@@ -460,41 +696,84 @@
             try {
                 const res = await fetch('/status');
                 const data = await res.json();
-                document.getElementById('status-engine').innerText = data.engine_active ? 'PROXMOX ONLINE' : 'OFFLINE';
-                document.getElementById('status-engine').className = data.engine_active ? 'stat-value status-online' : 'stat-value status-offline';
 
-                document.getElementById('status-mt5').innerText = data.mt5_connected ? `CONNECTED (${data.mt5_latency}ms)` : 'DISCONNECTED';
-                document.getElementById('status-mt5').className = data.mt5_connected ? 'stat-value status-online' : 'stat-value status-offline';
+                // Engine Status
+                const eng = document.getElementById('status-engine');
+                eng.innerText = data.engine_active ? 'OPERATIONAL' : 'SYSTEM OFFLINE';
+                eng.style.color = data.engine_active ? 'var(--success)' : 'var(--error)';
 
-                document.getElementById('status-bybit').innerText = data.bybit_connected ? `ONLINE (${data.bybit_latency}ms)` : 'OFFLINE';
-                document.getElementById('status-bybit').className = data.bybit_connected ? 'stat-value status-online' : 'stat-value status-offline';
+                // MT5
+                const mt5Val = document.getElementById('status-mt5');
+                const mt5Txt = document.getElementById('status-mt5-text');
+                mt5Val.innerText = data.mt5_connected ? `${data.mt5_latency}ms` : '---';
+                mt5Val.style.color = data.mt5_connected ? 'var(--success)' : 'var(--error)';
+                mt5Txt.innerText = data.mt5_connected ? 'BRIDGE SECURE' : 'LINK SEVERED';
 
-                // Update Daily Profit
+                // Bybit
+                const bybitVal = document.getElementById('status-bybit');
+                const bybitTxt = document.getElementById('status-bybit-text');
+                bybitVal.innerText = data.bybit_connected ? `${data.bybit_latency}ms` : '---';
+                bybitVal.style.color = data.bybit_connected ? 'var(--success)' : 'var(--error)';
+                bybitTxt.innerText = data.bybit_connected ? 'UPLINK ACTIVE' : 'NO CARRIER';
+
+                // Profit
                 const profitEl = document.getElementById('daily-profit');
-                profitEl.innerText = (data.daily_profit >= 0 ? '+' : '') + '$' + data.daily_profit.toFixed(2);
-                profitEl.className = data.daily_profit >= 0 ? 'stat-value status-online' : 'stat-value status-error';
+                profitEl.innerText = (data.daily_profit >= 0 ? '+' : '-') + '$' + Math.abs(data.daily_profit).toFixed(2);
+                profitEl.style.color = data.daily_profit >= 0 ? 'var(--success)' : 'var(--error)';
 
-                // Update Signal History
+                // Chart Update
+                if (perfChart) {
+                    const now = new Date().toLocaleTimeString();
+                    perfChart.data.labels.push(now);
+                    perfChart.data.datasets[0].data.push(data.daily_profit);
+                    if (perfChart.data.labels.length > 20) {
+                        perfChart.data.labels.shift();
+                        perfChart.data.datasets[0].data.shift();
+                    }
+                    perfChart.update('none');
+                }
+
+                // Channels Update
+                const chanLog = document.getElementById('monitored-channels');
+                if (data.monitored_channels && data.monitored_channels.length > 0) {
+                    chanLog.innerHTML = data.monitored_channels.map(c => `
+                        <div class="channel-item">
+                            <div class="channel-info">
+                                <div class="channel-icon">${c.name.charAt(0)}</div>
+                                <div class="channel-details">
+                                    <span class="name">${c.name}</span>
+                                    <span class="id">${c.id}</span>
+                                </div>
+                            </div>
+                            <span class="badge badge-success">Live</span>
+                        </div>
+                    `).join('');
+                } else {
+                    chanLog.innerHTML = '<div style="text-align:center; padding: 2rem; color: var(--text-secondary)">No active nodes found</div>';
+                }
+
+                // Signal Log
                 const log = document.getElementById('signal-log');
                 if (data.trade_history.length === 0) {
-                    log.innerHTML = '<tr><td colspan="5" style="text-align:center; color:var(--text-dim)">Waiting for first signal...</td></tr>';
+                    log.innerHTML = '<tr><td colspan="5" style="text-align:center; color:var(--text-secondary)">Scanning for signals...</td></tr>';
                 } else {
-                    log.innerHTML = data.trade_history.map(t => `
+                    log.innerHTML = data.trade_history.slice(-10).reverse().map(t => `
                         <tr>
-                            <td>${t.time}</td>
-                            <td>${t.symbol}</td>
-                            <td>${t.type}</td>
+                            <td style="font-family:'JetBrains Mono'">${t.time}</td>
+                            <td style="font-weight:700">${t.symbol}</td>
+                            <td class="${t.type === 'BUY' ? 'price-up' : 'price-down'}">${t.type}</td>
                             <td>${t.target}</td>
                             <td><span style="color:${t.success ? 'var(--success)' : 'var(--error)'}">●</span> ${t.status}</td>
                         </tr>
                     `).join('');
                 }
             } catch (e) {
-                console.error("API Connection Lost");
+                console.error("Link Lost: Re-establishing sync...");
             }
         }
 
-        setInterval(fetchStatus, 5000);
+        initChart();
+        setInterval(fetchStatus, 3000);
         fetchStatus();
     </script>
 </body>

@@ -50,7 +50,8 @@ async def get_status():
         "bybit_connected": True if engine and engine.config['bybit']['enabled'] else False,
         "bybit_latency": engine.bybit_latency if engine else 0,
         "daily_profit": engine.daily_profit if engine else 0.0,
-        "trade_history": engine.trade_history if engine else []
+        "trade_history": engine.trade_history if engine else [],
+        "monitored_channels": engine.monitored_channels if engine else []
     }
 
 @app.post("/settings/update")

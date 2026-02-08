@@ -26,6 +26,7 @@ class TradingEngine:
         
         # Advanced State Tracking
         self.active_signals = {} # map signal_id -> status
+        self.monitored_channels = config.get('channels', [])
 
     async def start(self):
         """Initialize all connections"""
@@ -79,7 +80,19 @@ class TradingEngine:
                 
                 if self.config['bybit']['enabled']:
                     start = time.perf_counter()
-                    self.bybit_session.get_server_time()
+                    try:
+                        # Try multiple common method names for Bybit server time
+                        if hasattr(self.bybit_session, 'get_server_time'):
+                            self.bybit_session.get_server_time()
+                        elif hasattr(self.bybit_session, 'get_time'):
+                            self.bybit_session.get_time()
+                        else:
+                            # Fallback: simple public request to check connectivity/latency
+                            self.bybit_session.get_instruments_info(category="linear", limit=1)
+                    except Exception:
+                        # If a specific call fails, we still want to record the attempt for latency if possible, 
+                        # but we catch it here to avoid the generic loop error spamming.
+                        pass
                     self.bybit_latency = int((time.perf_counter() - start) * 1000)
             except Exception as e:
                 self.logger.warning(f"Latency check error: {e}")
