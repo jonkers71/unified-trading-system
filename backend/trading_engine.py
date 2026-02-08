@@ -176,7 +176,26 @@ class TradingEngine:
         signal = self.parser.parse_message(text, channel_info)
         
         if signal:
+            if not self._check_spread(signal):
+                self.logger.warning(f"Trade Aborted: Spread exceeds limit for {signal['symbol']}")
+                return
             await self.execute_trade(signal)
+
+    def _check_spread(self, signal):
+        """Verify if current spread is within allowed limits"""
+        symbol = signal['symbol']
+        info = mt5.symbol_info(symbol)
+        if not info: return False
+        
+        current_spread = info.spread # in points
+        
+        # Determine limit based on asset type
+        if "XAU" in symbol or "GOLD" in symbol.upper():
+            limit = self.config['trading'].get('max_spread_gold', 800)
+        else:
+            limit = self.config['trading'].get('max_spread_forex', 5)
+            
+        return current_spread <= limit
 
     async def execute_trade(self, signal):
         """Direct execution logic based on UI settings"""
@@ -187,6 +206,8 @@ class TradingEngine:
                 await self._execute_mt5_split(signal)
             elif tp_mode == 'hybrid':
                 await self._execute_mt5_hybrid(signal)
+            elif tp_mode == 'scalper':
+                await self._execute_mt5_scalper(signal)
             else: # Sniper
                 await self._execute_mt5_sniper(signal)
         elif signal['type'] == 'crypto':
@@ -231,10 +252,12 @@ class TradingEngine:
         balance = mt5.account_info().balance
         total_lot = self.risk_manager.calculate_mt5_lot(info, signal['entry'], signal['sl'], balance)
         
-        # Split lot into 3 (33%, 33%, 34%) with volume_min safety
+        # Split lot according to config
+        splits = self.config['trading'].get('tp_split', [33, 33, 34])
         min_v = info.volume_min
-        lot1 = max(min_v, round(total_lot * 0.33, 2))
-        lot2 = max(min_v, round(total_lot * 0.33, 2))
+        
+        lot1 = max(min_v, round(total_lot * (splits[0]/100), 2))
+        lot2 = max(min_v, round(total_lot * (splits[1]/100), 2))
         lot3 = round(total_lot - (lot1 + lot2), 2)
         
         # If total is too small for 3 positions, just use 1
@@ -264,6 +287,32 @@ class TradingEngine:
         """Execute 1 position targeting a specific TP level"""
         # Logic same as hybrid but no partial close monitoring
         await self._execute_mt5_hybrid(signal)
+
+    async def _execute_mt5_scalper(self, signal):
+        """Execute 1 position targeting ONLY TP1"""
+        symbol = signal['symbol']
+        side = mt5.ORDER_TYPE_BUY if signal['side'] == 'BUY' else mt5.ORDER_TYPE_SELL
+        
+        info = mt5.symbol_info(symbol)
+        balance = mt5.account_info().balance
+        lot = self.risk_manager.calculate_mt5_lot(info, signal['entry'], signal['sl'], balance)
+        
+        request = {
+            "action": mt5.TRADE_ACTION_DEAL,
+            "symbol": symbol,
+            "volume": lot,
+            "type": side,
+            "price": mt5.symbol_info_tick(symbol).ask if side == mt5.ORDER_TYPE_BUY else mt5.symbol_info_tick(symbol).bid,
+            "sl": signal['sl'],
+            "tp": signal['tps'][0], # Only TP1
+            "magic": self.config['mt5']['magic_number'],
+            "comment": f"Scalper: {signal['channel_name']}",
+            "type_time": mt5.ORDER_TIME_GTC,
+            "type_filling": mt5.ORDER_FILLING_IOC,
+        }
+        
+        result = mt5.order_send(request)
+        self._log_trade(result, symbol, lot, signal)
 
     def _log_trade(self, result, symbol, lot, signal):
         if result.retcode != mt5.TRADE_RETCODE_DONE:

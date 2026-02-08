@@ -673,6 +673,7 @@
                         <label>Execution Mode</label>
                         <select id="tp-mode">
                             <option value="hybrid">HYBRID: Partial TP1 -> BE -> Runner</option>
+                            <option value="scalper">SCALPER: TP1 Only Objective</option>
                             <option value="split">SPLIT: 3 Decentralized Positions</option>
                             <option value="sniper">SNIPER: Single Objective Lock</option>
                         </select>
@@ -700,8 +701,8 @@
                         <label>TP Allocation Split (%)</label>
                         <div class="setting-desc">Distribution for TP1, TP2, TP3</div>
                         <div class="field-row">
-                            <input type="number" placeholder="TP1: 33%">
-                            <input type="number" placeholder="TP2: 33%">
+                            <input type="number" id="tp-split-1" placeholder="TP1: 33%">
+                            <input type="number" id="tp-split-2" placeholder="TP2: 33%">
                         </div>
                     </div>
                     <div class="setting-field">
@@ -813,15 +814,21 @@
         }
 
         async function saveSettings() {
-            // Collecting more fields now
+            // Collecting all fields for ConfigUpdate model
             const data = {
                 risk_percent: parseFloat(document.getElementById('risk-percent').value),
                 tp_mode: document.getElementById('tp-mode').value,
                 final_target: document.getElementById('final-target').value,
-                be_buffer: parseInt(document.getElementById('be-buffer').value),
-                trailing_distance: parseInt(document.getElementById('trailing-distance').value),
+                be_enabled: document.getElementById('be-enabled').value === 'true',
+                be_buffer: parseFloat(document.getElementById('be-buffer').value),
+                trailing_enabled: document.getElementById('trailing-enabled').value === 'true',
+                trailing_distance: parseFloat(document.getElementById('trailing-distance').value),
                 symbol_suffix: document.getElementById('symbol-suffix').value,
-                channel_ids: document.getElementById('channel-ids').value
+                channel_ids: document.getElementById('channel-ids').value,
+                max_spread_forex: parseFloat(document.getElementById('max-spread-forex').value || 5),
+                max_spread_gold: parseFloat(document.getElementById('max-spread-gold').value || 800),
+                tp_split_1: parseInt(document.getElementById('tp-split-1').value || 33),
+                tp_split_2: parseInt(document.getElementById('tp-split-2').value || 33)
             };
 
             try {
@@ -831,7 +838,11 @@
                     body: JSON.stringify(data)
                 });
                 const result = await res.json();
-                alert("PROTOCOL UPLOAD SUCCESSFUL");
+                if (result.status === 'success') {
+                    alert("PROTOCOL UPLOAD SUCCESSFUL: " + result.message);
+                } else {
+                    alert("SERVER ERROR: " + result.message);
+                }
             } catch (e) {
                 alert("SYNC ERROR: " + e);
             }

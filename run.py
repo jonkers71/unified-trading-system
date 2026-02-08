@@ -40,6 +40,16 @@ class ConfigUpdate(BaseModel):
     risk_percent: float
     tp_mode: str
     final_target: str = "tp3"
+    be_enabled: bool = True
+    be_buffer: float = 5.0
+    trailing_enabled: bool = False
+    trailing_distance: float = 15.0
+    symbol_suffix: str = ""
+    channel_ids: str = ""
+    max_spread_forex: float = 5.0
+    max_spread_gold: float = 800.0
+    tp_split_1: int = 33
+    tp_split_2: int = 33
 
 @app.get("/status")
 async def get_status():
@@ -64,6 +74,26 @@ async def update_settings(data: ConfigUpdate):
         engine.config['trading']['be_buffer'] = data.be_buffer
         engine.config['trading']['trailing_enabled'] = data.trailing_enabled
         engine.config['trading']['trailing_distance'] = data.trailing_distance
+        engine.config['trading']['symbol_suffix'] = data.symbol_suffix
+        engine.config['trading']['max_spread_forex'] = data.max_spread_forex
+        engine.config['trading']['max_spread_gold'] = data.max_spread_gold
+        engine.config['trading']['tp_split'] = [data.tp_split_1, data.tp_split_2, 100 - (data.tp_split_1 + data.tp_split_2)]
+        
+        # Update channel list if provided
+        if data.channel_ids:
+            # Assuming comma separated IDs
+            ids = [id.strip() for id in data.channel_ids.split(",") if id.strip()]
+            # This is a bit simplified, but we update the internal monitored list
+            # Usually we'd want names too, but we can stick to IDs for now or preserve existing names
+            new_channels = []
+            for cid in ids:
+                existing = next((c for c in engine.config.get('channels', []) if str(c['id']) == cid), None)
+                if existing:
+                    new_channels.append(existing)
+                else:
+                    new_channels.append({"id": int(cid) if cid.startswith("-") or cid.isdigit() else cid, "name": f"Node {cid}"})
+            engine.config['channels'] = new_channels
+            engine.monitored_channels = new_channels
         
         # Save to file
         try:
