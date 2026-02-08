@@ -215,7 +215,7 @@
         }
 
         .stat-info .label {
-            font-size: 0.75rem;
+            font-size: 0.65rem;
             font-weight: 600;
             color: var(--text-secondary);
             text-transform: uppercase;
@@ -223,18 +223,32 @@
         }
 
         .stat-info .value {
-            font-size: 1.5rem;
+            font-size: 1.25rem;
             font-weight: 700;
-            margin-top: 0.5rem;
+            margin-top: 0.4rem;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
             display: flex;
             align-items: baseline;
-            gap: 0.5rem;
+            gap: 0.4rem;
         }
 
         .stat-info .sub-value {
-            font-size: 0.8rem;
+            font-size: 0.7rem;
             font-family: 'JetBrains Mono', monospace;
             color: var(--text-secondary);
+            margin-top: 0.25rem;
+        }
+
+        .status-online {
+            color: var(--success) !important;
+            font-size: 1.15rem !important;
+        }
+
+        .status-offline {
+            color: var(--error) !important;
+            font-size: 1.15rem !important;
         }
 
         /* Charts & Lists Area */
@@ -479,7 +493,7 @@
 
         <div style="margin-top: auto;">
             <div class="nav-item"
-                style="color: var(--error); background: rgba(239, 68, 68, 0.05); border-color: rgba(239, 68, 68, 0.2);">
+                style="color: var(--error); background: rgba(239, 68, 68, 0.05); border-color: rgba(239, 68, 68, 0.1);">
                 <span>ABORT MISSION</span>
             </div>
         </div>
@@ -541,8 +555,7 @@
                     <div class="card-header">
                         <h3>Active Comms Nodes</h3>
                     </div>
-                    <div class="channel-list" id="monitored-channels">
-                        <!-- Channels populated by JS -->
+                    <div class="channel-list" id="monitored-channels-dash">
                         <div style="text-align:center; padding: 2rem; color: var(--text-secondary)">Syncing Channels...
                         </div>
                     </div>
@@ -563,7 +576,7 @@
                             <th>Status/Hash</th>
                         </tr>
                     </thead>
-                    <tbody id="signal-log">
+                    <tbody id="signal-log-dash">
                         <tr>
                             <td colspan="5" style="text-align:center; padding: 2rem; color: var(--text-secondary)">
                                 Scanning for signals...</td>
@@ -573,17 +586,81 @@
             </div>
         </div>
 
+        <!-- Live Feeds Tab -->
+        <div id="positions" class="tab-content" style="display:none">
+            <div class="header">
+                <h1>Live Feeds</h1>
+                <p>Real-time market activity and open positions</p>
+            </div>
+            <div class="card">
+                <div class="card-header">
+                    <h3>Open Market Positions</h3>
+                </div>
+                <div id="live-positions-list" style="text-align:center; padding: 3rem; color: var(--text-secondary)">
+                    No active positions detected in current session.
+                </div>
+            </div>
+        </div>
+
+        <!-- Comms Log Tab -->
+        <div id="signals" class="tab-content" style="display:none">
+            <div class="header">
+                <h1>Comms Log</h1>
+                <p>Full history of incoming signal transmissions</p>
+            </div>
+            <div class="card">
+                <div class="card-header">
+                    <h3>Signal Metadata History</h3>
+                </div>
+                <table class="trade-table">
+                    <thead>
+                        <tr>
+                            <th>Received At</th>
+                            <th>Instrument</th>
+                            <th>Type</th>
+                            <th>Strategy Target</th>
+                            <th>Outcome</th>
+                        </tr>
+                    </thead>
+                    <tbody id="signal-log-full">
+                        <tr>
+                            <td colspan="5" style="text-align:center; padding: 2rem; color: var(--text-secondary)">Log
+                                is empty.</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Signal Nodes Tab -->
+        <div id="channels" class="tab-content" style="display:none">
+            <div class="header">
+                <h1>Signal Nodes</h1>
+                <p>Active Telegram sources being monitored</p>
+            </div>
+            <div class="card">
+                <div class="card-header">
+                    <h3>Configured Discovery Nodes</h3>
+                </div>
+                <div class="channel-list" id="monitored-channels-full">
+                    <div style="text-align:center; padding: 2rem; color: var(--text-secondary)">Scanning discovery
+                        protocol...</div>
+                </div>
+            </div>
+        </div>
+
         <!-- Settings Tab -->
         <div id="settings" class="tab-content" style="display:none">
             <div class="header">
                 <div>
                     <h1>Risk Parameters</h1>
-                    <p>Configure automated execution strategies</p>
+                    <p>Automated execution and protection configuration</p>
                 </div>
-                <button class="btn" onclick="saveSettings()">Upload Config</button>
+                <button class="btn" onclick="saveSettings()">Upload Protocol</button>
             </div>
 
-            <div class="content-grid" style="grid-template-columns: 1fr 1fr">
+            <div class="settings-grid">
+                <!-- Allocation & Mode -->
                 <div class="card">
                     <div class="card-header">
                         <h3>Allocation & Risk</h3>
@@ -600,26 +677,88 @@
                             <option value="sniper">SNIPER: Single Objective Lock</option>
                         </select>
                     </div>
+                    <div class="setting-field">
+                        <label>Broker Suffix</label>
+                        <div class="setting-desc">e.g. +, .pro, .raw (leave blank if none)</div>
+                        <input type="text" id="symbol-suffix" placeholder="+">
+                    </div>
                 </div>
+
+                <!-- Spread & Scaling -->
+                <div class="card">
+                    <div class="card-header">
+                        <h3>Market Filters</h3>
+                    </div>
+                    <div class="setting-field">
+                        <label>Max Allowed Spread (Forex/Gold)</label>
+                        <div class="field-row">
+                            <input type="number" id="max-spread-forex" placeholder="Forex (e.g. 5)">
+                            <input type="number" id="max-spread-gold" placeholder="Gold (e.g. 800)">
+                        </div>
+                    </div>
+                    <div class="setting-field">
+                        <label>TP Allocation Split (%)</label>
+                        <div class="setting-desc">Distribution for TP1, TP2, TP3</div>
+                        <div class="field-row">
+                            <input type="number" placeholder="TP1: 33%">
+                            <input type="number" placeholder="TP2: 33%">
+                        </div>
+                    </div>
+                    <div class="setting-field">
+                        <label>Final Objective Tier</label>
+                        <select id="final-target">
+                            <option value="tp2">Tier 2 Target</option>
+                            <option value="tp3">Tier 3 (Runner)</option>
+                        </select>
+                    </div>
+                </div>
+
+                <!-- Protection -->
                 <div class="card">
                     <div class="card-header">
                         <h3>Protection Protocols</h3>
                     </div>
-                    <div class="field-row">
-                        <div class="setting-field">
-                            <label>Breakeven Buffer</label>
-                            <input type="number" id="be-buffer" value="5">
-                        </div>
-                        <div class="setting-field">
-                            <label>Trailing Distance</label>
-                            <input type="number" id="trailing-distance" value="15">
+                    <div class="setting-field">
+                        <label>Breakeven Logic</label>
+                        <div class="field-row">
+                            <select id="be-enabled">
+                                <option value="true">Active</option>
+                                <option value="false">Disabled</option>
+                            </select>
+                            <input type="number" id="be-buffer" placeholder="Buffer Pix" value="5">
                         </div>
                     </div>
                     <div class="setting-field">
-                        <label>Final Objective</label>
-                        <select id="final-target">
-                            <option value="tp2">Target Objective 2</option>
-                            <option value="tp3">Target Objective 3</option>
+                        <label>Trailing Engine</label>
+                        <div class="field-row">
+                            <select id="trailing-enabled">
+                                <option value="true">Enable</option>
+                                <option value="false">Disable</option>
+                            </select>
+                            <input type="number" id="trailing-distance" placeholder="Distance" value="15">
+                        </div>
+                    </div>
+                    <div class="setting-field">
+                        <label>Activation Pips</label>
+                        <input type="number" id="trailing-activation" value="20">
+                    </div>
+                </div>
+
+                <!-- Telegram Config -->
+                <div class="card">
+                    <div class="card-header">
+                        <h3>Communication Nodes</h3>
+                    </div>
+                    <div class="setting-field">
+                        <label>Authorized Channel IDs</label>
+                        <div class="setting-desc">Comma separated global unique IDs</div>
+                        <input type="text" id="channel-ids" placeholder="-100..., -100...">
+                    </div>
+                    <div class="setting-field">
+                        <label>Special Asset Logic</label>
+                        <select id="gold-preset">
+                            <option value="true">Gold Optimizer Active</option>
+                            <option value="false">Standard Logic</option>
                         </select>
                     </div>
                 </div>
@@ -640,10 +779,10 @@
                         label: 'P/L Real-time',
                         data: [],
                         borderColor: '#3b82f6',
-                        backgroundColor: 'rgba(59, 130, 246, 0.1)',
+                        backgroundColor: 'rgba(59, 130, 246, 0.05)',
                         fill: true,
                         tension: 0.4,
-                        borderWidth: 3,
+                        borderWidth: 2,
                         pointRadius: 0
                     }]
                 },
@@ -654,8 +793,8 @@
                     scales: {
                         x: { display: false },
                         y: {
-                            grid: { color: 'rgba(255,255,255,0.05)' },
-                            ticks: { color: '#94a3b8', font: { family: 'JetBrains Mono' } }
+                            grid: { color: 'rgba(255,255,255,0.03)' },
+                            ticks: { color: '#64748b', font: { size: 10, family: 'JetBrains Mono' } }
                         }
                     }
                 }
@@ -666,17 +805,23 @@
             document.querySelectorAll('.tab-content').forEach(t => t.style.display = 'none');
             document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
 
-            document.getElementById(tabId).style.display = 'block';
-            event.currentTarget.classList.add('active');
+            const target = document.getElementById(tabId);
+            if (target) {
+                target.style.display = 'block';
+                event.currentTarget.classList.add('active');
+            }
         }
 
         async function saveSettings() {
+            // Collecting more fields now
             const data = {
                 risk_percent: parseFloat(document.getElementById('risk-percent').value),
                 tp_mode: document.getElementById('tp-mode').value,
                 final_target: document.getElementById('final-target').value,
                 be_buffer: parseInt(document.getElementById('be-buffer').value),
-                trailing_distance: parseInt(document.getElementById('trailing-distance').value)
+                trailing_distance: parseInt(document.getElementById('trailing-distance').value),
+                symbol_suffix: document.getElementById('symbol-suffix').value,
+                channel_ids: document.getElementById('channel-ids').value
             };
 
             try {
@@ -686,9 +831,9 @@
                     body: JSON.stringify(data)
                 });
                 const result = await res.json();
-                alert("PROTOCOL UPDATED: " + result.message);
+                alert("PROTOCOL UPLOAD SUCCESSFUL");
             } catch (e) {
-                alert("COMMUNICATION ERROR: " + e);
+                alert("SYNC ERROR: " + e);
             }
         }
 
@@ -700,19 +845,19 @@
                 // Engine Status
                 const eng = document.getElementById('status-engine');
                 eng.innerText = data.engine_active ? 'OPERATIONAL' : 'SYSTEM OFFLINE';
-                eng.style.color = data.engine_active ? 'var(--success)' : 'var(--error)';
+                eng.className = 'value ' + (data.engine_active ? 'status-online' : 'status-offline');
 
                 // MT5
                 const mt5Val = document.getElementById('status-mt5');
                 const mt5Txt = document.getElementById('status-mt5-text');
-                mt5Val.innerText = data.mt5_connected ? `${data.mt5_latency}ms` : '---';
+                mt5Val.innerText = data.mt5_connected ? `${data.mt5_latency}ms` : '--';
                 mt5Val.style.color = data.mt5_connected ? 'var(--success)' : 'var(--error)';
                 mt5Txt.innerText = data.mt5_connected ? 'BRIDGE SECURE' : 'LINK SEVERED';
 
                 // Bybit
                 const bybitVal = document.getElementById('status-bybit');
                 const bybitTxt = document.getElementById('status-bybit-text');
-                bybitVal.innerText = data.bybit_connected ? `${data.bybit_latency}ms` : '---';
+                bybitVal.innerText = data.bybit_connected ? `${data.bybit_latency}ms` : '--';
                 bybitVal.style.color = data.bybit_connected ? 'var(--success)' : 'var(--error)';
                 bybitTxt.innerText = data.bybit_connected ? 'UPLINK ACTIVE' : 'NO CARRIER';
 
@@ -721,54 +866,54 @@
                 profitEl.innerText = (data.daily_profit >= 0 ? '+' : '-') + '$' + Math.abs(data.daily_profit).toFixed(2);
                 profitEl.style.color = data.daily_profit >= 0 ? 'var(--success)' : 'var(--error)';
 
-                // Chart Update
+                // Chart
                 if (perfChart) {
                     const now = new Date().toLocaleTimeString();
                     perfChart.data.labels.push(now);
                     perfChart.data.datasets[0].data.push(data.daily_profit);
-                    if (perfChart.data.labels.length > 20) {
+                    if (perfChart.data.labels.length > 30) {
                         perfChart.data.labels.shift();
                         perfChart.data.datasets[0].data.shift();
                     }
                     perfChart.update('none');
                 }
 
-                // Channels Update
-                const chanLog = document.getElementById('monitored-channels');
-                if (data.monitored_channels && data.monitored_channels.length > 0) {
-                    chanLog.innerHTML = data.monitored_channels.map(c => `
+                // Channels Populate (Dashboard and Nodes Tab)
+                const channelHtml = data.monitored_channels && data.monitored_channels.length > 0
+                    ? data.monitored_channels.map(c => `
                         <div class="channel-item">
                             <div class="channel-info">
                                 <div class="channel-icon">${c.name.charAt(0)}</div>
-                                <div class="channel-details">
-                                    <span class="name">${c.name}</span>
-                                    <span class="id">${c.id}</span>
-                                </div>
+                                <div class="channel-details"><span class="name">${c.name}</span><span class="id">${c.id}</span></div>
                             </div>
-                            <span class="badge badge-success">Live</span>
+                            <div style="font-size:0.6rem; color:var(--success)">LINKED</div>
                         </div>
-                    `).join('');
-                } else {
-                    chanLog.innerHTML = '<div style="text-align:center; padding: 2rem; color: var(--text-secondary)">No active nodes found</div>';
-                }
+                    `).join('')
+                    : '<div style="text-align:center; padding: 2rem; color: var(--text-secondary)">No active nodes found</div>';
 
-                // Signal Log
-                const log = document.getElementById('signal-log');
-                if (data.trade_history.length === 0) {
-                    log.innerHTML = '<tr><td colspan="5" style="text-align:center; color:var(--text-secondary)">Scanning for signals...</td></tr>';
-                } else {
-                    log.innerHTML = data.trade_history.slice(-10).reverse().map(t => `
+                document.getElementById('monitored-channels-dash').innerHTML = channelHtml;
+                const chanFull = document.getElementById('monitored-channels-full');
+                if (chanFull) chanFull.innerHTML = channelHtml;
+
+                // Signal Logs
+                const logHtml = data.trade_history.length === 0
+                    ? '<tr><td colspan="5" style="text-align:center; color:var(--text-secondary)">Scanning...</td></tr>'
+                    : data.trade_history.slice(-15).reverse().map(t => `
                         <tr>
-                            <td style="font-family:'JetBrains Mono'">${t.time}</td>
+                            <td style="font-family:'JetBrains Mono'; font-size:0.75rem">${t.time}</td>
                             <td style="font-weight:700">${t.symbol}</td>
                             <td class="${t.type === 'BUY' ? 'price-up' : 'price-down'}">${t.type}</td>
                             <td>${t.target}</td>
                             <td><span style="color:${t.success ? 'var(--success)' : 'var(--error)'}">●</span> ${t.status}</td>
                         </tr>
                     `).join('');
-                }
+
+                document.getElementById('signal-log-dash').innerHTML = logHtml;
+                const logFull = document.getElementById('signal-log-full');
+                if (logFull) logFull.innerHTML = logHtml;
+
             } catch (e) {
-                console.error("Link Lost: Re-establishing sync...");
+                console.error("Link Lost");
             }
         }
 
