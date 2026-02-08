@@ -877,6 +877,22 @@
                 profitEl.innerText = (data.daily_profit >= 0 ? '+' : '-') + '$' + Math.abs(data.daily_profit).toFixed(2);
                 profitEl.style.color = data.daily_profit >= 0 ? 'var(--success)' : 'var(--error)';
 
+                // Settings Auto-Populate (One time or when moving to tab)
+                if (data.settings && !window.settingsLoaded) {
+                    if (document.getElementById('risk-percent')) document.getElementById('risk-percent').value = data.settings.default_risk_percent || 1.0;
+                    if (document.getElementById('tp-mode')) document.getElementById('tp-mode').value = data.settings.tp_mode || 'hybrid';
+                    if (document.getElementById('final-target')) document.getElementById('final-target').value = data.settings.final_target || 'tp3';
+                    if (document.getElementById('be-enabled')) document.getElementById('be-enabled').value = String(data.settings.be_enabled !== false);
+                    if (document.getElementById('be-buffer')) document.getElementById('be-buffer').value = data.settings.be_buffer || 5;
+                    if (document.getElementById('trailing-enabled')) document.getElementById('trailing-enabled').value = String(data.settings.trailing_enabled === true);
+                    if (document.getElementById('trailing-distance')) document.getElementById('trailing-distance').value = data.settings.trailing_distance || 15;
+                    if (document.getElementById('symbol-suffix')) document.getElementById('symbol-suffix').value = data.settings.symbol_suffix || '';
+                    if (data.monitored_channels && !document.getElementById('channel-ids').value) {
+                        document.getElementById('channel-ids').value = data.monitored_channels.map(c => c.id).join(', ');
+                    }
+                    window.settingsLoaded = true;
+                }
+
                 // Chart
                 if (perfChart) {
                     const now = new Date().toLocaleTimeString();
