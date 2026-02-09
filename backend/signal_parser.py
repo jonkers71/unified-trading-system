@@ -17,7 +17,9 @@ class SignalParser:
             'type': r'(BUY|SELL|LONG|SHORT)',
             'price': r'(?:ENTRY|PRICE|AT|@)\s*:?\s*(\d+\.?\d*)',
             'sl': r'(?:SL|STOPLOSS|STOP LOSS)\s*:?\s*(\d+\.?\d*)',
-            'tp': r'(?:TP|TAKEPROFIT|TARGET)\s*(\d+)?\s*:?\s*(\d+\.?\d*)'
+            'tp': r'(?:TP|TAKEPROFIT|TARGET)\s*(\d+)?\s*:?\s*(\d+\.?\d*)',
+            'action_move_sl': r'(?:MOVE SL TO|SL TO|BE)\s*:?\s*(\d+\.?\d*)',
+            'action_close': r'(?:CLOSE|EXIT)\s+(?:HALF|PARTIAL|ALL|NOW)'
         }
 
     def parse_message(self, text, channel_info):
@@ -29,13 +31,15 @@ class SignalParser:
         # 1. Extract Symbol
         symbol_match = re.search(self.patterns['symbol'], text)
         if not symbol_match:
+            self.logger.debug(f"Parse fail: No symbol found in: {text[:80]}")
             return None
         symbol = symbol_match.group(1).replace('/', '')
         
         # 2. Extract Side
         type_match = re.search(self.patterns['type'], text)
         if not type_match:
-             return None
+            self.logger.debug(f"Parse fail: No BUY/SELL found for {symbol}")
+            return None
         side = "BUY" if type_match.group(1) in ["BUY", "LONG"] else "SELL"
         
         # 3. Extract Entry (Handle ranges like 1.0500 - 1.0510)
@@ -50,17 +54,34 @@ class SignalParser:
         # 5. Extract TPs (Multiple)
         tps = self._extract_all_tps(text)
         
-        if not entry or not sl or not tps:
-            self.logger.warning(f"Failed to parse required fields for {symbol}: Entry={entry}, SL={sl}, TPs={tps}")
+        # 6. Check for Update Actions
+        action = None
+        action_val = None
+        
+        move_sl_match = re.search(self.patterns['action_move_sl'], text)
+        if move_sl_match:
+            action = "MOVE_SL"
+            action_val = float(move_sl_match.group(1)) if move_sl_match.group(1) else "BE"
+        elif re.search(self.patterns['action_close'], text):
+            action = "CLOSE"
+            
+        if not entry and not sl and not tps and not action:
+            self.logger.debug(f"Parse fail: Missing all key fields for {symbol} (Entry:{entry}, SL:{sl}, TPs:{tps}, Action:{action})")
             return None
+        
+        # Warn if we have incomplete data for a new trade signal
+        if not action and (not entry or not sl or not tps):
+            self.logger.warning(f"⚠️ Incomplete signal for {symbol}: Entry={entry}, SL={sl}, TPs={tps}")
 
         signal = {
             'timestamp': datetime.now().isoformat(),
             'symbol': symbol,
             'side': side,
-            'entry': float(entry),
-            'sl': float(sl),
-            'tps': [float(tp) for tp in tps],
+            'entry': float(entry) if entry else None,
+            'sl': float(sl) if sl else None,
+            'tps': [float(tp) for tp in tps] if tps else [],
+            'action': action,
+            'action_val': action_val,
             'channel_name': channel_info.get('name', 'Unknown'),
             'channel_id': channel_info.get('id'),
             'type': channel_info.get('type', 'forex')

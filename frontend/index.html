@@ -507,9 +507,15 @@
                     <h1>System Overview</h1>
                     <p><span class="pulse"></span> Tactical Trading Operations Active</p>
                 </div>
-                <div class="btn"
-                    style="background: var(--glass); border: 1px solid var(--border); color: var(--text-secondary);">
-                    NODE: 192.168.1.104
+                <div style="display: flex; gap: 0.75rem">
+                    <button id="btn-soft-stop" class="btn" onclick="toggleSoftStop()"
+                        style="background: var(--warning); border: 1px solid rgba(245, 158, 11, 0.2);">
+                        PAUSE EXECUTIONS
+                    </button>
+                    <div class="btn"
+                        style="background: var(--glass); border: 1px solid var(--border); color: var(--text-secondary);">
+                        NODE: 192.168.1.104
+                    </div>
                 </div>
             </div>
 
@@ -848,10 +854,37 @@
             }
         }
 
+        async function toggleSoftStop() {
+            try {
+                const res = await fetch('/engine/toggle-trades', { method: 'POST' });
+                const data = await res.json();
+                fetchStatus();
+                alert(data.message);
+            } catch (e) {
+                alert("TOGGLE ERROR: " + e);
+            }
+        }
+
         async function fetchStatus() {
             try {
                 const res = await fetch('/status');
                 const data = await res.json();
+
+                // Soft Stop Button Update
+                const ssBtn = document.getElementById('btn-soft-stop');
+                if (data.new_trades_enabled) {
+                    if (ssBtn) {
+                        ssBtn.innerText = 'PAUSE EXECUTIONS';
+                        ssBtn.style.background = 'var(--warning)';
+                        ssBtn.style.color = 'white';
+                    }
+                } else {
+                    if (ssBtn) {
+                        ssBtn.innerText = 'RESUME EXECUTIONS';
+                        ssBtn.style.background = 'var(--glass)';
+                        ssBtn.style.color = 'var(--warning)';
+                    }
+                }
 
                 // Engine Status
                 const eng = document.getElementById('status-engine');

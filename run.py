@@ -1,15 +1,20 @@
 import logging
 import yaml
 import asyncio
+import os
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import PlainTextResponse
 from backend.trading_engine import TradingEngine
 from pydantic import BaseModel
 
+# Ensure logs directory exists
+os.makedirs('logs', exist_ok=True)
+
 # Setup Logging with UTF-8 support for Emojis
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG, # Changed to DEBUG to capture all events
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.FileHandler('logs/unified_trader.log', encoding='utf-8'),
@@ -62,7 +67,8 @@ async def get_status():
         "daily_profit": engine.daily_profit if engine else 0.0,
         "trade_history": engine.trade_history if engine else [],
         "monitored_channels": engine.monitored_channels if engine else [],
-        "settings": engine.config.get('trading', {}) if engine else {}
+        "settings": engine.config.get('trading', {}) if engine else {},
+        "new_trades_enabled": engine.new_trades_enabled if engine else True
     }
 
 @app.post("/settings/update")
@@ -105,6 +111,26 @@ async def update_settings(data: ConfigUpdate):
             return {"status": "error", "message": f"Failed to save: {e}"}
             
     return {"status": "error", "message": "Engine not initialized"}
+
+@app.post("/engine/toggle-trades")
+async def toggle_trades():
+    if engine:
+        engine.new_trades_enabled = not engine.new_trades_enabled
+        status = "ENABLED" if engine.new_trades_enabled else "STANDBY"
+        return {"status": "success", "new_state": engine.new_trades_enabled, "message": f"Global trade execution is now {status}"}
+    return {"status": "error", "message": "Engine not initialized"}
+
+@app.get("/logs", response_class=PlainTextResponse)
+async def view_logs(lines: int = 100):
+    """View the last N lines of the log file"""
+    try:
+        with open('logs/unified_trader.log', 'r', encoding='utf-8') as f:
+            all_lines = f.readlines()
+            return ''.join(all_lines[-lines:])
+    except FileNotFoundError:
+        return "Log file not found. No activity yet."
+    except Exception as e:
+        return f"Error reading logs: {e}"
 
 if __name__ == "__main__":
     import uvicorn

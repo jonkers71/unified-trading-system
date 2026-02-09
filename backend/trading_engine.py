@@ -27,6 +27,9 @@ class TradingEngine:
         # Advanced State Tracking
         self.active_signals = {} # map signal_id -> status
         self.monitored_channels = config.get('channels', [])
+        
+        # Operational Control
+        self.new_trades_enabled = True
 
     async def start(self):
         """Initialize all connections"""
@@ -169,17 +172,105 @@ class TradingEngine:
     async def on_message_received(self, event):
         """Handle incoming signals from Telegram"""
         sender_id = event.chat_id
-        channel_info = next((c for c in self.config['channels'] if c['id'] == sender_id), None)
-        if not channel_info: return
-
         text = event.message.message
+        
+        # Log ALL incoming messages for debugging
+        self.logger.debug(f"📨 Message from {sender_id}: {text[:100]}...")
+        
+        channel_info = next((c for c in self.config['channels'] if c['id'] == sender_id), None)
+        if not channel_info:
+            self.logger.debug(f"⏭️ Ignoring message from unmonitored channel: {sender_id}")
+            return
+        
+        self.logger.info(f"📡 Signal received from [{channel_info.get('name', sender_id)}]")
+        
         signal = self.parser.parse_message(text, channel_info)
         
-        if signal:
-            if not self._check_spread(signal):
-                self.logger.warning(f"Trade Aborted: Spread exceeds limit for {signal['symbol']}")
-                return
+        if not signal:
+            self.logger.warning(f"❌ Failed to parse signal from message: {text[:150]}...")
+            self.trade_history.append({
+                "time": time.strftime("%H:%M:%S"),
+                "symbol": "PARSE_FAIL",
+                "type": "--",
+                "target": "--",
+                "status": f"Parser failed",
+                "success": False
+            })
+            return
+            
+        self.logger.info(f"✅ Parsed: {signal['side']} {signal['symbol']} Entry:{signal.get('entry')} SL:{signal.get('sl')} TPs:{signal.get('tps')}")
+        
+        if signal.get('action'):
+            self.logger.info(f"🔄 Update signal detected: {signal['action']}")
+            await self.handle_signal_update(signal)
+        elif not self._check_spread(signal):
+            self.logger.warning(f"🚫 Trade Aborted: Spread exceeds limit for {signal['symbol']}")
+            self.trade_history.append({
+                "time": time.strftime("%H:%M:%S"),
+                "symbol": signal['symbol'],
+                "type": signal['side'],
+                "target": "--",
+                "status": f"Spread limit exceeded",
+                "success": False
+            })
+            return
+        else:
             await self.execute_trade(signal)
+
+    async def handle_signal_update(self, signal):
+        """Process updates like MOVE SL or CLOSE for existing trades"""
+        symbol = signal['symbol']
+        action = signal['action']
+        val = signal['action_val']
+        
+        self.logger.info(f"🔄 Processing Update Action: {action} for {symbol}")
+        
+        # 1. MT5 Updates
+        if self.config['mt5']['enabled']:
+            positions = mt5.positions_get(symbol=symbol)
+            if positions:
+                for pos in positions:
+                    if pos.magic != self.config['mt5']['magic_number']: continue
+                    
+                    if action == "MOVE_SL":
+                        new_sl = pos.price_open if val == "BE" else float(val)
+                        self._modify_sl(pos.ticket, new_sl)
+                    elif action == "CLOSE":
+                        self._close_mt5_position(pos)
+                        
+        # 2. Bybit Updates
+        if self.config['bybit']['enabled'] and self.bybit_session:
+             # Basic implementation: update SL or close all for symbol
+             if action == "MOVE_SL":
+                 try:
+                     self.bybit_session.set_trading_stop(
+                         category="linear", symbol=symbol, stopLoss=str(val), positionIdx=0
+                     )
+                 except Exception as e:
+                     self.logger.error(f"Bybit SL Update Error: {e}")
+             elif action == "CLOSE":
+                 # Implementation for market closing bybit position...
+                 pass
+
+    def _close_mt5_position(self, pos):
+        """Close an MT5 position completely"""
+        request = {
+            "action": mt5.TRADE_ACTION_DEAL,
+            "symbol": pos.symbol,
+            "volume": pos.volume,
+            "type": mt5.ORDER_TYPE_SELL if pos.type == mt5.POSITION_TYPE_BUY else mt5.ORDER_TYPE_BUY,
+            "position": pos.ticket,
+            "price": mt5.symbol_info_tick(pos.symbol).bid if pos.type == mt5.POSITION_TYPE_BUY else mt5.symbol_info_tick(pos.symbol).ask,
+            "magic": pos.magic,
+            "comment": "CLOSE SIGNAL",
+            "type_time": mt5.ORDER_TIME_GTC,
+            "type_filling": mt5.ORDER_FILLING_IOC,
+        }
+        result = mt5.order_send(request)
+        if result.retcode != mt5.TRADE_RETCODE_DONE:
+            self.logger.error(f"Failed to close {pos.ticket}: {result.comment}")
+        else:
+            self.logger.info(f"✅ Closed Position {pos.ticket}")
 
     def _check_spread(self, signal):
         """Verify if current spread is within allowed limits"""
@@ -199,7 +290,20 @@ class TradingEngine:
 
     async def execute_trade(self, signal):
         """Direct execution logic based on UI settings"""
+        if not self.new_trades_enabled:
+            self.logger.info(f"⏸️ Skipping new trade for {signal['symbol']} (Standby Mode Active)")
+            self.trade_history.append({
+                "time": time.strftime("%H:%M:%S"),
+                "symbol": signal['symbol'],
+                "type": signal['side'],
+                "target": "--",
+                "status": "Skipped (Standby)",
+                "success": False
+            })
+            return
+            
         tp_mode = self.config['trading'].get('tp_mode', 'hybrid')
+        self.logger.info(f"⚡ Executing {signal['symbol']} in {tp_mode.upper()} mode")
         
         if signal['type'] == 'forex':
             if tp_mode == 'split':
