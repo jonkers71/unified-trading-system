@@ -46,11 +46,18 @@ class SignalParser:
             return None
         side = "BUY" if type_match.group(1) in ["BUY", "LONG"] else "SELL"
         
-        # 3. Extract Entry (Handle ranges like 1.0500 - 1.0510)
-        entry_prices = re.findall(r'(\d+\.\d+)', text)
-        # Simple heuristic: first number usually entry, unless it's SL/TP
-        # Professional logic would use position in text
+        # 3. Extract Entry
+        # First try keyword-based extraction (ENTRY:, PRICE:, Enter below:, etc.)
         entry = self._extract_value(text, self.patterns['price'])
+        
+        # If no keyword entry found, try extracting price directly after BUY/SELL
+        # Format: "XAUUSD 📈 BUY 5009.00" or "USDJPY SELL 156.98"
+        if not entry:
+            inline_pattern = r'(?:BUY|SELL|LONG|SHORT)\s+(\d+\.?\d*)'
+            inline_match = re.search(inline_pattern, text)
+            if inline_match:
+                entry = inline_match.group(1)
+
         
         # 4. Extract SL
         sl = self._extract_value(text, self.patterns['sl'])
@@ -156,4 +163,30 @@ if __name__ == "__main__":
     """
     print("\n=== CRYPTO TEST ===")
     print(parser.parse_message(crypto_msg, {'name': 'Wolfx Crypto VIP', 'type': 'crypto'}))
+    
+    # WolfX Forex format (inline price after BUY/SELL)
+    wolfx_gold = """
+    XAUUSD 📈 BUY 5009.00
 
+    💰TP1 5011.00
+    💰TP2 5014.00
+    💰TP3 5019.00
+    🚫SL 5001.00
+
+    WOLFXSIGNALS.COM content
+    """
+    print("\n=== WOLFX GOLD TEST ===")
+    result = parser.parse_message(wolfx_gold, {'name': 'WolfX Forex VIP', 'type': 'forex'})
+    print(f"Symbol: {result['symbol']}, Side: {result['side']}, Entry: {result['entry']}, SL: {result['sl']}, TPs: {result['tps']}")
+    
+    wolfx_jpy = """
+    USDJPY 📉 SELL 156.98
+
+    💰TP1 156.78
+    💰TP2 156.48
+    💰TP3 155.98
+    🚫SL 157.78
+    """
+    print("\n=== WOLFX USDJPY TEST ===")
+    result = parser.parse_message(wolfx_jpy, {'name': 'WolfX Forex VIP', 'type': 'forex'})
+    print(f"Symbol: {result['symbol']}, Side: {result['side']}, Entry: {result['entry']}, SL: {result['sl']}, TPs: {result['tps']}")
