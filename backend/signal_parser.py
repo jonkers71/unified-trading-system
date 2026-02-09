@@ -13,13 +13,17 @@ class SignalParser:
         
         # Common regex patterns
         self.patterns = {
-            'symbol': r'([A-Z]{3,}/?[A-Z]{3,}|GOLD|XAUUSD|BTCUSDT|ETHUSDT|BCHUSDT)',
+            'symbol': r'([A-Z]{3,}/?[A-Z]{3,}|GOLD|XAUUSD|BTCUSDT|ETHUSDT|BCHUSDT|XRPUSDT|SOLUSDT|DOGEUSDT)',
             'type': r'(BUY|SELL|LONG|SHORT)',
-            'price': r'(?:ENTRY|PRICE|AT|@)\s*:?\s*(\d+\.?\d*)',
-            'sl': r'(?:SL|STOPLOSS|STOP LOSS)\s*:?\s*(\d+\.?\d*)',
-            'tp': r'(?:TP|TAKEPROFIT|TARGET)\s*(\d+)?\s*:?\s*(\d+\.?\d*)',
+            # Entry: supports "ENTRY:", "PRICE:", "AT", "@", "Enter below:", "Enter at:"
+            'price': r'(?:ENTRY|PRICE|ENTER\s*(?:BELOW|AT|AROUND)?|AT|@)\s*:?\s*(\d+\.?\d*)',
+            'sl': r'(?:SL|STOPLOSS|STOP\s*LOSS)\s*:?\s*(\d+\.?\d*)',
+            # TP: handles "TP1: 1234.5" and "💰TP1 1234.5" formats
+            'tp': r'(?:💰)?\s*(?:TP|TAKEPROFIT|TARGET)\s*(\d+)?\s*:?\s*(\d+\.?\d*)',
             'action_move_sl': r'(?:MOVE SL TO|SL TO|BE)\s*:?\s*(\d+\.?\d*)',
-            'action_close': r'(?:CLOSE|EXIT)\s+(?:HALF|PARTIAL|ALL|NOW)'
+            'action_close': r'(?:CLOSE|EXIT)\s+(?:HALF|PARTIAL|ALL|NOW)',
+            # Leverage for crypto
+            'leverage': r'LEVERAGE\s*[Xx]?(\d+)'
         }
 
     def parse_message(self, text, channel_info):
@@ -95,16 +99,36 @@ class SignalParser:
         return match.group(1) if match else None
 
     def _extract_all_tps(self, text):
-        # Finds all TP sequences: TP1: 1.234, TP2: 1.250, etc.
-        tps = re.findall(r'(?:TP|TARGET|TP\d+)\s*:?\s*(\d+\.?\d*)', text)
-        # Remove duplicates while preserving order
+        """
+        Extract all TP prices from text.
+        Handles formats like:
+        - TP1: 1.234, TP2: 1.250
+        - 💰TP1 68854.4
+        - TARGET 1: 1.234
+        """
+        # This regex captures: optional emoji, TP/TARGET, optional number, then THE PRICE
+        # The price is a decimal number that follows after the TP label
+        tp_pattern = r'(?:💰)?\s*(?:TP|TARGET)\s*\d*\s*:?\s*(\d+\.\d+|\d{4,})'
+        tps = re.findall(tp_pattern, text)
+        
+        # Remove duplicates while preserving order, and filter out small numbers (like TP indices)
         seen = set()
-        return [x for x in tps if not (x in seen or seen.add(x))]
+        result = []
+        for tp in tps:
+            # Filter: TP prices should be reasonably sized (not just "1", "2", "3")
+            if tp not in seen and (float(tp) > 10 or '.' in tp):
+                seen.add(tp)
+                result.append(tp)
+        
+        return result
+
 
 if __name__ == "__main__":
     # Test cases
     parser = SignalParser()
-    test_msg = """
+    
+    # Forex test
+    forex_msg = """
     🔥 GOLD BUY NOW 🔥
     Entry: 2020.50
     SL: 2015.00
@@ -112,4 +136,24 @@ if __name__ == "__main__":
     TP2: 2030.00
     TP3: 2040.00
     """
-    print(parser.parse_message(test_msg, {'name': 'GoldVIP', 'type': 'forex'}))
+    print("=== FOREX TEST ===")
+    print(parser.parse_message(forex_msg, {'name': 'GoldVIP', 'type': 'forex'}))
+    
+    # Crypto test (WolfX format)
+    crypto_msg = """
+    BTC/USDT 
+
+    🔹Enter below: 69355.2(with a minimum value of 69352.0)
+
+    📉SELL 
+
+    💰TP1 68854.4
+    💰TP2 68431.9
+    💰TP3 66265.8
+    🚫SL 70381.2
+
+    〽️Leverage x10
+    """
+    print("\n=== CRYPTO TEST ===")
+    print(parser.parse_message(crypto_msg, {'name': 'Wolfx Crypto VIP', 'type': 'crypto'}))
+

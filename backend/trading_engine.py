@@ -275,27 +275,46 @@ class TradingEngine:
     def _check_spread(self, signal):
         """Verify if current spread is within allowed limits"""
         symbol = signal['symbol']
+        asset_type = signal.get('type', 'forex')
+        
+        # For crypto, we don't check spread via MT5 - it goes through Bybit
+        crypto_keywords = ['USDT', 'USDC', 'BUSD', 'BTC', 'ETH', 'SOL', 'XRP', 'DOGE']
+        is_crypto = any(kw in symbol.upper() for kw in crypto_keywords) or asset_type == 'crypto'
+        
+        if is_crypto:
+            # For crypto, we could check Bybit spread here, but for now just allow
+            # The spread on perpetuals is typically tight enough
+            self.logger.debug(f"Spread check skipped for crypto: {symbol}")
+            return True
+        
+        # MT5 spread check for forex/metals
         info = mt5.symbol_info(symbol)
         if not info: 
-            self.logger.warning(f"Could not get symbol info for {symbol}")
-            return False
+            self.logger.warning(f"Could not get symbol info for {symbol} - trying with suffix")
+            # Try with broker suffix
+            suffix = self.config['trading'].get('symbol_suffix', '')
+            if suffix:
+                info = mt5.symbol_info(symbol + suffix)
+            if not info:
+                self.logger.error(f"Symbol {symbol} not found in MT5")
+                return False
         
         current_spread = info.spread # in points
         
         # Determine limit based on asset type (Metals vs Forex)
-        # Metals: Gold (XAU), Silver (XAG), Platinum (XPT), Palladium (XPD)
         metals_keywords = ['XAU', 'GOLD', 'XAG', 'SILVER', 'XPT', 'PLATINUM', 'XPD', 'PALLADIUM']
         is_metal = any(kw in symbol.upper() for kw in metals_keywords)
         
         if is_metal:
-            limit = self.config['trading'].get('max_spread_gold', 800)  # 'gold' key kept for backwards compat
-            asset_type = "METAL"
+            limit = self.config['trading'].get('max_spread_gold', 800)
+            asset_label = "METAL"
         else:
             limit = self.config['trading'].get('max_spread_forex', 5)
-            asset_type = "FOREX"
+            asset_label = "FOREX"
         
-        self.logger.debug(f"Spread check for {symbol} ({asset_type}): {current_spread} vs limit {limit}")
+        self.logger.debug(f"Spread check for {symbol} ({asset_label}): {current_spread} vs limit {limit}")
         return current_spread <= limit
+
 
 
     async def execute_trade(self, signal):
