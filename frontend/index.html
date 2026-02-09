@@ -930,6 +930,17 @@
                     if (document.getElementById('trailing-enabled')) document.getElementById('trailing-enabled').value = String(data.settings.trailing_enabled === true);
                     if (document.getElementById('trailing-distance')) document.getElementById('trailing-distance').value = data.settings.trailing_distance || 15;
                     if (document.getElementById('symbol-suffix')) document.getElementById('symbol-suffix').value = data.settings.symbol_suffix || '';
+
+                    // Market Filters - Spread Limits
+                    if (document.getElementById('max-spread-forex')) document.getElementById('max-spread-forex').value = data.settings.max_spread_forex || 5;
+                    if (document.getElementById('max-spread-gold')) document.getElementById('max-spread-gold').value = data.settings.max_spread_gold || 800;
+
+                    // Market Filters - TP Splits
+                    if (data.settings.tp_split && Array.isArray(data.settings.tp_split)) {
+                        if (document.getElementById('tp-split-1')) document.getElementById('tp-split-1').value = data.settings.tp_split[0] || 33;
+                        if (document.getElementById('tp-split-2')) document.getElementById('tp-split-2').value = data.settings.tp_split[1] || 33;
+                    }
+
                     if (data.monitored_channels && !document.getElementById('channel-ids').value) {
                         document.getElementById('channel-ids').value = data.monitored_channels.map(c => c.id).join(', ');
                     }
@@ -943,6 +954,7 @@
 
                     window.settingsLoaded = true;
                 }
+
 
 
                 // Chart
