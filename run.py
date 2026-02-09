@@ -14,7 +14,7 @@ os.makedirs('logs', exist_ok=True)
 
 # Setup Logging with UTF-8 support for Emojis
 logging.basicConfig(
-    level=logging.DEBUG, # Changed to DEBUG to capture all events
+    level=logging.DEBUG, # Default to DEBUG, will be adjusted after config load
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.FileHandler('logs/unified_trader.log', encoding='utf-8'),
@@ -22,12 +22,20 @@ logging.basicConfig(
     ]
 )
 
+logger = logging.getLogger("API")
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global engine
     try:
         with open("config/settings.yaml", "r") as f:
             config = yaml.safe_load(f)
+        
+        # Apply log level from config
+        log_level = config.get('system', {}).get('log_level', 'INFO').upper()
+        logging.getLogger().setLevel(getattr(logging, log_level, logging.INFO))
+        logger.info(f"Log level set to: {log_level}")
+        
         engine = TradingEngine(config)
         asyncio.create_task(engine.start())
         yield
@@ -131,6 +139,33 @@ async def view_logs(lines: int = 100):
         return "Log file not found. No activity yet."
     except Exception as e:
         return f"Error reading logs: {e}"
+
+@app.post("/logs/level/{level}")
+async def set_log_level(level: str):
+    """Set the logging level dynamically: DEBUG, INFO, WARNING, ERROR"""
+    level = level.upper()
+    if level not in ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL']:
+        return {"status": "error", "message": f"Invalid level. Use: DEBUG, INFO, WARNING, ERROR, CRITICAL"}
+    
+    logging.getLogger().setLevel(getattr(logging, level))
+    
+    # Also update config if engine is running
+    if engine:
+        if 'system' not in engine.config:
+            engine.config['system'] = {}
+        engine.config['system']['log_level'] = level
+        try:
+            with open("config/settings.yaml", "w") as f:
+                yaml.dump(engine.config, f)
+        except:
+            pass # Non-critical if save fails
+    
+    return {"status": "success", "message": f"Log level set to {level}"}
+
+@app.get("/logs/level")
+async def get_log_level():
+    """Get current logging level"""
+    return {"level": logging.getLevelName(logging.getLogger().level)}
 
 if __name__ == "__main__":
     import uvicorn
