@@ -276,17 +276,27 @@ class TradingEngine:
         """Verify if current spread is within allowed limits"""
         symbol = signal['symbol']
         info = mt5.symbol_info(symbol)
-        if not info: return False
+        if not info: 
+            self.logger.warning(f"Could not get symbol info for {symbol}")
+            return False
         
         current_spread = info.spread # in points
         
-        # Determine limit based on asset type
-        if "XAU" in symbol or "GOLD" in symbol.upper():
-            limit = self.config['trading'].get('max_spread_gold', 800)
+        # Determine limit based on asset type (Metals vs Forex)
+        # Metals: Gold (XAU), Silver (XAG), Platinum (XPT), Palladium (XPD)
+        metals_keywords = ['XAU', 'GOLD', 'XAG', 'SILVER', 'XPT', 'PLATINUM', 'XPD', 'PALLADIUM']
+        is_metal = any(kw in symbol.upper() for kw in metals_keywords)
+        
+        if is_metal:
+            limit = self.config['trading'].get('max_spread_gold', 800)  # 'gold' key kept for backwards compat
+            asset_type = "METAL"
         else:
             limit = self.config['trading'].get('max_spread_forex', 5)
-            
+            asset_type = "FOREX"
+        
+        self.logger.debug(f"Spread check for {symbol} ({asset_type}): {current_spread} vs limit {limit}")
         return current_spread <= limit
+
 
     async def execute_trade(self, signal):
         """Direct execution logic based on UI settings"""

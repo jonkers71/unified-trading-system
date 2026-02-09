@@ -487,7 +487,7 @@
 
         <div class="nav-group">
             <div class="nav-label">configuration</div>
-            <div class="nav-item" onclick="showTab('settings')">Risk Parameters</div>
+            <div class="nav-item" onclick="showTab('settings')">System Parameters</div>
             <div class="nav-item" onclick="showTab('channels')">Signal Nodes</div>
         </div>
 
@@ -659,8 +659,8 @@
         <div id="settings" class="tab-content" style="display:none">
             <div class="header">
                 <div>
-                    <h1>Risk Parameters</h1>
-                    <p>Automated execution and protection configuration</p>
+                    <h1>System Parameters</h1>
+                    <p>Trading, execution, and system configuration</p>
                 </div>
                 <button class="btn" onclick="saveSettings()">Upload Protocol</button>
             </div>
@@ -697,11 +697,12 @@
                         <h3>Market Filters</h3>
                     </div>
                     <div class="setting-field">
-                        <label>Max Allowed Spread (Forex/Gold)</label>
+                        <label>Max Allowed Spread (Forex / Metals)</label>
                         <div class="field-row">
                             <input type="number" id="max-spread-forex" placeholder="Forex (e.g. 5)">
-                            <input type="number" id="max-spread-gold" placeholder="Gold (e.g. 800)">
+                            <input type="number" id="max-spread-gold" placeholder="Metals (e.g. 800)">
                         </div>
+                        <div class="setting-desc">Metals = Gold, Silver, Platinum, Palladium</div>
                     </div>
                     <div class="setting-field">
                         <label>TP Allocation Split (%)</label>
@@ -762,10 +763,13 @@
                         <input type="text" id="channel-ids" placeholder="-100..., -100...">
                     </div>
                     <div class="setting-field">
-                        <label>Special Asset Logic</label>
-                        <select id="gold-preset">
-                            <option value="true">Gold Optimizer Active</option>
-                            <option value="false">Standard Logic</option>
+                        <label>System Log Level</label>
+                        <div class="setting-desc">DEBUG for testing, INFO or WARNING for production</div>
+                        <select id="log-level">
+                            <option value="DEBUG">DEBUG: All activity</option>
+                            <option value="INFO" selected>INFO: Normal operations</option>
+                            <option value="WARNING">WARNING: Issues only</option>
+                            <option value="ERROR">ERROR: Failures only</option>
                         </select>
                     </div>
                 </div>
@@ -838,12 +842,18 @@
             };
 
             try {
+                // Save trading settings
                 const res = await fetch('/settings/update', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(data)
                 });
                 const result = await res.json();
+
+                // Also update log level separately
+                const logLevel = document.getElementById('log-level').value;
+                await fetch(`/logs/level/${logLevel}`, { method: 'POST' });
+
                 if (result.status === 'success') {
                     alert("PROTOCOL UPLOAD SUCCESSFUL: " + result.message);
                 } else {
@@ -923,8 +933,17 @@
                     if (data.monitored_channels && !document.getElementById('channel-ids').value) {
                         document.getElementById('channel-ids').value = data.monitored_channels.map(c => c.id).join(', ');
                     }
+
+                    // Fetch and set log level
+                    fetch('/logs/level').then(r => r.json()).then(logData => {
+                        if (document.getElementById('log-level')) {
+                            document.getElementById('log-level').value = logData.level || 'INFO';
+                        }
+                    }).catch(() => { });
+
                     window.settingsLoaded = true;
                 }
+
 
                 // Chart
                 if (perfChart) {
