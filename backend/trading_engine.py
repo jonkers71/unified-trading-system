@@ -219,24 +219,28 @@ class TradingEngine:
 
     async def handle_signal_update(self, signal):
         """Process updates like MOVE SL or CLOSE for existing trades"""
-        symbol = signal['symbol']
+        raw_symbol = signal['symbol']
         action = signal['action']
         val = signal['action_val']
         
-        self.logger.info(f"🔄 Processing Update Action: {action} for {symbol}")
+        self.logger.info(f"🔄 Processing Update Action: {action} for {raw_symbol}")
         
         # 1. MT5 Updates
         if self.config['mt5']['enabled']:
-            positions = mt5.positions_get(symbol=symbol)
-            if positions:
-                for pos in positions:
-                    if pos.magic != self.config['mt5']['magic_number']: continue
-                    
-                    if action == "MOVE_SL":
-                        new_sl = pos.price_open if val == "BE" else float(val)
-                        self._modify_sl(pos.ticket, new_sl)
-                    elif action == "CLOSE":
-                        self._close_mt5_position(pos)
+            symbol = self._resolve_mt5_symbol(raw_symbol)
+            if symbol:
+                positions = mt5.positions_get(symbol=symbol)
+                if positions:
+                    for pos in positions:
+                        if pos.magic != self.config['mt5']['magic_number']: continue
+                        
+                        if action == "MOVE_SL":
+                            new_sl = pos.price_open if val == "BE" else float(val)
+                            self._modify_sl(pos.ticket, new_sl)
+                        elif action == "CLOSE":
+                            self._close_mt5_position(pos)
+                else:
+                    self.logger.debug(f"🔍 No open MT5 positions for {symbol} found to update")
                         
         # 2. Bybit Updates
         if self.config['bybit']['enabled'] and self.bybit_session:
@@ -244,7 +248,7 @@ class TradingEngine:
              if action == "MOVE_SL":
                  try:
                      self.bybit_session.set_trading_stop(
-                         category="linear", symbol=symbol, stopLoss=str(val), positionIdx=0
+                         category="linear", symbol=raw_symbol, stopLoss=str(val), positionIdx=0
                      )
                  except Exception as e:
                      self.logger.error(f"Bybit SL Update Error: {e}")
@@ -315,6 +319,24 @@ class TradingEngine:
         self.logger.debug(f"Spread check for {symbol} ({asset_label}): {current_spread} vs limit {limit}")
         return current_spread <= limit
 
+    def _resolve_mt5_symbol(self, raw_symbol):
+        """Resolve the actual MT5 symbol name, applying broker suffix if needed"""
+        # Try raw symbol first
+        if mt5.symbol_info(raw_symbol):
+            return raw_symbol
+        
+        # Try with broker suffix
+        suffix = self.config['trading'].get('symbol_suffix', '')
+        if suffix:
+            suffixed = raw_symbol + suffix
+            if mt5.symbol_info(suffixed):
+                self.logger.debug(f"Symbol resolved: {raw_symbol} -> {suffixed}")
+                return suffixed
+        
+        # Symbol not found
+        self.logger.error(f"Symbol {raw_symbol} not found in MT5 (tried suffix: {suffix})")
+        return None
+
 
 
     async def execute_trade(self, signal):
@@ -348,10 +370,20 @@ class TradingEngine:
 
     async def _execute_mt5_hybrid(self, signal):
         """Execute 1 large position with partial close monitoring"""
-        symbol = signal['symbol']
+        raw_symbol = signal['symbol']
+        symbol = self._resolve_mt5_symbol(raw_symbol)
+        if not symbol:
+            self._log_failed_trade(raw_symbol, signal, "Symbol not found in MT5")
+            return
+            
         side = mt5.ORDER_TYPE_BUY if signal['side'] == 'BUY' else mt5.ORDER_TYPE_SELL
         
         info = mt5.symbol_info(symbol)
+        tick = mt5.symbol_info_tick(symbol)
+        if not tick:
+            self._log_failed_trade(symbol, signal, "Could not get tick data")
+            return
+            
         balance = mt5.account_info().balance
         lot = self.risk_manager.calculate_mt5_lot(info, signal['entry'], signal['sl'], balance)
         
@@ -364,7 +396,7 @@ class TradingEngine:
             "symbol": symbol,
             "volume": lot,
             "type": side,
-            "price": mt5.symbol_info_tick(symbol).ask if side == mt5.ORDER_TYPE_BUY else mt5.symbol_info_tick(symbol).bid,
+            "price": tick.ask if side == mt5.ORDER_TYPE_BUY else tick.bid,
             "sl": signal['sl'],
             "tp": signal['tps'][final_tp_idx],
             "magic": self.config['mt5']['magic_number'],
@@ -378,10 +410,20 @@ class TradingEngine:
 
     async def _execute_mt5_split(self, signal):
         """Execute 3 separate positions for each TP"""
-        symbol = signal['symbol']
+        raw_symbol = signal['symbol']
+        symbol = self._resolve_mt5_symbol(raw_symbol)
+        if not symbol:
+            self._log_failed_trade(raw_symbol, signal, "Symbol not found in MT5")
+            return
+            
         side = mt5.ORDER_TYPE_BUY if signal['side'] == 'BUY' else mt5.ORDER_TYPE_SELL
         
         info = mt5.symbol_info(symbol)
+        tick = mt5.symbol_info_tick(symbol)
+        if not tick:
+            self._log_failed_trade(symbol, signal, "Could not get tick data")
+            return
+            
         balance = mt5.account_info().balance
         total_lot = self.risk_manager.calculate_mt5_lot(info, signal['entry'], signal['sl'], balance)
         
@@ -400,12 +442,13 @@ class TradingEngine:
              lots = [lot1, lot2, lot3]
         for i, tp_price in enumerate(signal['tps']):
             if i >= 3: break
+            if lots[i] <= 0: continue
             request = {
                 "action": mt5.TRADE_ACTION_DEAL,
                 "symbol": symbol,
                 "volume": lots[i],
                 "type": side,
-                "price": mt5.symbol_info_tick(symbol).ask if side == mt5.ORDER_TYPE_BUY else mt5.symbol_info_tick(symbol).bid,
+                "price": tick.ask if side == mt5.ORDER_TYPE_BUY else tick.bid,
                 "sl": signal['sl'],
                 "tp": tp_price,
                 "magic": self.config['mt5']['magic_number'],
@@ -423,10 +466,20 @@ class TradingEngine:
 
     async def _execute_mt5_scalper(self, signal):
         """Execute 1 position targeting ONLY TP1"""
-        symbol = signal['symbol']
+        raw_symbol = signal['symbol']
+        symbol = self._resolve_mt5_symbol(raw_symbol)
+        if not symbol:
+            self._log_failed_trade(raw_symbol, signal, "Symbol not found in MT5")
+            return
+            
         side = mt5.ORDER_TYPE_BUY if signal['side'] == 'BUY' else mt5.ORDER_TYPE_SELL
         
         info = mt5.symbol_info(symbol)
+        tick = mt5.symbol_info_tick(symbol)
+        if not tick:
+            self._log_failed_trade(symbol, signal, "Could not get tick data")
+            return
+            
         balance = mt5.account_info().balance
         lot = self.risk_manager.calculate_mt5_lot(info, signal['entry'], signal['sl'], balance)
         
@@ -435,7 +488,7 @@ class TradingEngine:
             "symbol": symbol,
             "volume": lot,
             "type": side,
-            "price": mt5.symbol_info_tick(symbol).ask if side == mt5.ORDER_TYPE_BUY else mt5.symbol_info_tick(symbol).bid,
+            "price": tick.ask if side == mt5.ORDER_TYPE_BUY else tick.bid,
             "sl": signal['sl'],
             "tp": signal['tps'][0], # Only TP1
             "magic": self.config['mt5']['magic_number'],
@@ -448,18 +501,36 @@ class TradingEngine:
         self._log_trade(result, symbol, lot, signal)
 
     def _log_trade(self, result, symbol, lot, signal):
+        """Log trade result and append to history"""
         if result.retcode != mt5.TRADE_RETCODE_DONE:
-            self.logger.error(f"Order Failed: {result.comment}")
+            self.logger.error(f"❌ Trade Failed for {symbol}: {result.comment}")
+            status = f"Failed: {result.comment}"
+            success = False
         else:
-            self.logger.info(f"✅ Success: {symbol} {lot} lots")
-            self.trade_history.append({
-                "time": time.strftime("%H:%M:%S"),
-                "symbol": symbol,
-                "type": signal['side'],
-                "target": "Active",
-                "status": f"Executed | {lot} lots",
-                "success": True
-            })
+            self.logger.info(f"✅ Trade Placed: {symbol} {lot} lots")
+            status = "Filled"
+            success = True
+            
+        self.trade_history.append({
+            "time": time.strftime("%H:%M:%S"),
+            "symbol": symbol,
+            "type": signal['side'],
+            "target": str(signal['tps'][0]) if signal['tps'] else "--",
+            "status": status,
+            "success": success
+        })
+
+    def _log_failed_trade(self, symbol, signal, reason):
+        """Log a failure before MT5 order sending"""
+        self.logger.error(f"❌ Execution Aborted for {symbol}: {reason}")
+        self.trade_history.append({
+            "time": time.strftime("%H:%M:%S"),
+            "symbol": symbol,
+            "type": signal['side'],
+            "target": "--",
+            "status": f"Error: {reason}",
+            "success": False
+        })
 
     async def _execute_bybit(self, signal):
         """Bybit Logic (to be refined for Multi-TP/Partial)"""
