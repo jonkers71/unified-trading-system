@@ -286,8 +286,6 @@ class TradingEngine:
         is_crypto = any(kw in symbol.upper() for kw in crypto_keywords) or asset_type == 'crypto'
         
         if is_crypto:
-            # For crypto, we could check Bybit spread here, but for now just allow
-            # The spread on perpetuals is typically tight enough
             self.logger.debug(f"Spread check skipped for crypto: {symbol}")
             return True
         
@@ -323,6 +321,7 @@ class TradingEngine:
         """Resolve the actual MT5 symbol name, applying broker suffix if needed"""
         # Try raw symbol first
         if mt5.symbol_info(raw_symbol):
+            mt5.symbol_select(raw_symbol, True)
             return raw_symbol
         
         # Try with broker suffix
@@ -330,14 +329,13 @@ class TradingEngine:
         if suffix:
             suffixed = raw_symbol + suffix
             if mt5.symbol_info(suffixed):
+                mt5.symbol_select(suffixed, True)
                 self.logger.debug(f"Symbol resolved: {raw_symbol} -> {suffixed}")
                 return suffixed
         
         # Symbol not found
         self.logger.error(f"Symbol {raw_symbol} not found in MT5 (tried suffix: {suffix})")
         return None
-
-
 
     async def execute_trade(self, signal):
         """Direct execution logic based on UI settings"""
@@ -379,9 +377,16 @@ class TradingEngine:
         side = mt5.ORDER_TYPE_BUY if signal['side'] == 'BUY' else mt5.ORDER_TYPE_SELL
         
         info = mt5.symbol_info(symbol)
-        tick = mt5.symbol_info_tick(symbol)
+        
+        # Try to get tick with small retries (sometimes selection takes a moment)
+        tick = None
+        for _ in range(5):
+            tick = mt5.symbol_info_tick(symbol)
+            if tick: break
+            await asyncio.sleep(0.1)
+            
         if not tick:
-            self._log_failed_trade(symbol, signal, "Could not get tick data")
+            self._log_failed_trade(symbol, signal, "Could not get tick data (timeout)")
             return
             
         balance = mt5.account_info().balance
@@ -419,9 +424,16 @@ class TradingEngine:
         side = mt5.ORDER_TYPE_BUY if signal['side'] == 'BUY' else mt5.ORDER_TYPE_SELL
         
         info = mt5.symbol_info(symbol)
-        tick = mt5.symbol_info_tick(symbol)
+        
+        # Try to get tick with small retries
+        tick = None
+        for _ in range(5):
+            tick = mt5.symbol_info_tick(symbol)
+            if tick: break
+            await asyncio.sleep(0.1)
+            
         if not tick:
-            self._log_failed_trade(symbol, signal, "Could not get tick data")
+            self._log_failed_trade(symbol, signal, "Could not get tick data (timeout)")
             return
             
         balance = mt5.account_info().balance
@@ -475,9 +487,16 @@ class TradingEngine:
         side = mt5.ORDER_TYPE_BUY if signal['side'] == 'BUY' else mt5.ORDER_TYPE_SELL
         
         info = mt5.symbol_info(symbol)
-        tick = mt5.symbol_info_tick(symbol)
+        
+        # Try to get tick with small retries
+        tick = None
+        for _ in range(5):
+            tick = mt5.symbol_info_tick(symbol)
+            if tick: break
+            await asyncio.sleep(0.1)
+            
         if not tick:
-            self._log_failed_trade(symbol, signal, "Could not get tick data")
+            self._log_failed_trade(symbol, signal, "Could not get tick data (timeout)")
             return
             
         balance = mt5.account_info().balance
