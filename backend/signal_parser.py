@@ -32,33 +32,39 @@ class SignalParser:
         """
         text = text.upper()
         
+        # 0. Noise Check: Must contain a trade side or a known update action
+        # If it doesn't even look like a signal, return None immediately and silently
+        has_side = re.search(self.patterns['type'], text)
+        has_update = re.search(self.patterns['action_move_sl'], text) or re.search(self.patterns['action_close'], text)
+        
+        if not has_side and not has_update:
+            self.logger.debug(f"Message ignored as noise (no Side or Action found)")
+            return None
+
         # 1. Extract Symbol
         symbol_match = re.search(self.patterns['symbol'], text)
         if not symbol_match:
-            self.logger.debug(f"Parse fail: No symbol found in: {text[:80]}")
+            self.logger.debug(f"Parse fail: No symbol found in suspected signal: {text[:80]}")
             return None
         symbol = symbol_match.group(1).replace('/', '')
         
         # 2. Extract Side
         type_match = re.search(self.patterns['type'], text)
-        if not type_match:
-            self.logger.debug(f"Parse fail: No BUY/SELL found for {symbol}")
-            return None
-        side = "BUY" if type_match.group(1) in ["BUY", "LONG"] else "SELL"
+        side = None
+        if type_match:
+            side = "BUY" if type_match.group(1) in ["BUY", "LONG"] else "SELL"
         
         # 3. Extract Entry
         # First try keyword-based extraction (ENTRY:, PRICE:, Enter below:, etc.)
         entry = self._extract_value(text, self.patterns['price'])
         
         # If no keyword entry found, try extracting price directly after BUY/SELL
-        # Format: "XAUUSD 📈 BUY 5009.00" or "USDJPY SELL 156.98"
         if not entry:
             inline_pattern = r'(?:BUY|SELL|LONG|SHORT)\s+(\d+\.?\d*)'
             inline_match = re.search(inline_pattern, text)
             if inline_match:
                 entry = inline_match.group(1)
 
-        
         # 4. Extract SL
         sl = self._extract_value(text, self.patterns['sl'])
         
@@ -72,7 +78,12 @@ class SignalParser:
         move_sl_match = re.search(self.patterns['action_move_sl'], text)
         if move_sl_match:
             action = "MOVE_SL"
-            action_val = float(move_sl_match.group(1)) if move_sl_match.group(1) else "BE"
+            action_val = move_sl_match.group(1)
+            if action_val:
+                try: action_val = float(action_val)
+                except: pass
+            else:
+                action_val = "BE"
         elif re.search(self.patterns['action_close'], text):
             action = "CLOSE"
             
@@ -87,7 +98,7 @@ class SignalParser:
         signal = {
             'timestamp': datetime.now().isoformat(),
             'symbol': symbol,
-            'side': side,
+            'side': side if side else "UPDATE",
             'entry': float(entry) if entry else None,
             'sl': float(sl) if sl else None,
             'tps': [float(tp) for tp in tps] if tps else [],
@@ -98,7 +109,7 @@ class SignalParser:
             'type': channel_info.get('type', 'forex')
         }
         
-        self.logger.info(f"Successfully parsed signal: {side} {symbol} TP1: {tps[0]}")
+        self.logger.info(f"Successfully parsed signal: {signal['side']} {symbol} Action: {action}")
         return signal
 
     def _extract_value(self, text, pattern):

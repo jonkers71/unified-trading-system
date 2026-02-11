@@ -187,15 +187,20 @@ class TradingEngine:
         signal = self.parser.parse_message(text, channel_info)
         
         if not signal:
-            self.logger.warning(f"❌ Failed to parse signal from message: {text[:150]}...")
-            self.trade_history.append({
-                "time": time.strftime("%H:%M:%S"),
-                "symbol": "PARSE_FAIL",
-                "type": "--",
-                "target": "--",
-                "status": f"Parser failed",
-                "success": False
-            })
+            # Check if this message looked like it should have been a signal before logging failure
+            looks_like_signal = any(kw in text.upper() for kw in ['BUY', 'SELL', 'LONG', 'SHORT', 'MOVE SL', 'CLOSE'])
+            if looks_like_signal:
+                self.logger.warning(f"❌ Failed to parse potential signal: {text[:150]}...")
+                self.trade_history.append({
+                    "time": time.strftime("%H:%M:%S"),
+                    "symbol": "PARSE_FAIL",
+                    "type": "--",
+                    "target": "--",
+                    "status": f"Parser failed",
+                    "success": False
+                })
+            else:
+                self.logger.debug(f"⏭️ Silently ignoring non-signal message")
             return
             
         self.logger.info(f"✅ Parsed: {signal['side']} {signal['symbol']} Entry:{signal.get('entry')} SL:{signal.get('sl')} TPs:{signal.get('tps')}")
@@ -576,4 +581,11 @@ class TradingEngine:
                     "target": "TP1", "status": f"Bybit: {qty}", "success": True
                 })
         except Exception as e:
-            self.logger.error(f"Bybit Error: {e}")
+            err_msg = str(e)
+            if "401" in err_msg:
+                err_msg = "Bybit Auth Error (401): Check API Keys and Ensure Mainnet/Testnet setting matches your keys."
+            self.logger.error(f"Bybit Error: {err_msg}")
+            self.trade_history.append({
+                "time": time.strftime("%H:%M:%S"), "symbol": symbol, "type": signal['side'],
+                "target": "--", "status": f"Bybit Err: {err_msg[:20]}...", "success": False
+            })
