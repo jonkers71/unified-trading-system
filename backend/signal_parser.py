@@ -13,13 +13,16 @@ class SignalParser:
         
         # Common regex patterns
         self.patterns = {
-            'symbol': r'([A-Z]{3,}/?[A-Z]{3,}|GOLD|XAUUSD|BTCUSDT|ETHUSDT|BCHUSDT|XRPUSDT|SOLUSDT|DOGEUSDT)',
+            # Symbol: specific knowns first, then generic letters. 
+            # Restricted generic [A-Z]{3,} to NOT match common noise words like "SIGNAL", "ALERT"
+            'symbol': r'(XAUUSD|BTCUSDT|ETHUSDT|BCHUSDT|XRPUSDT|SOLUSDT|DOGEUSDT|GOLD|[A-Z]{3,}/?[A-Z]{3,})',
             'type': r'(BUY|SELL|LONG|SHORT)',
             # Entry: supports "ENTRY:", "PRICE:", "AT", "@", "Enter below:", "Enter at:"
             'price': r'(?:ENTRY|PRICE|ENTER\s*(?:BELOW|AT|AROUND)?|AT|@)\s*:?\s*(\d+\.?\d*)',
-            'sl': r'(?:SL|STOPLOSS|STOP\s*LOSS)\s*:?\s*(\d+\.?\d*)',
-            # TP: handles "TP1: 1234.5" and "💰TP1 1234.5" formats
-            'tp': r'(?:💰)?\s*(?:TP|TAKEPROFIT|TARGET)\s*(\d+)?\s*:?\s*(\d+\.?\d*)',
+            # SL: handles optional emojis like 🔴, 🚫, ❌, 🛑
+            'sl': r'(?:🔴|🚫|❌|🛑|STOPLOSS|STOP\s*LOSS|SL)\s*:?\s*(\d+\.?\d*)',
+            # TP: handles "TP1: 1234.5", "💰TP1 1234.5", "🤑TP1: 1234.5" formats
+            'tp': r'(?:💰|🤑|🎯|🏹)?\s*(?:\s*)?(?:TP|TARGET|TAKEPROFIT|TARGET)\s*(\d+)?\s*:?\s*(\d+\.?\d*)',
             'action_move_sl': r'(?:MOVE SL TO|SL TO|BE)\s*:?\s*(\d+\.?\d*)',
             'action_close': r'(?:CLOSE|EXIT)\s+(?:HALF|PARTIAL|ALL|NOW)',
             # Leverage for crypto
@@ -48,6 +51,17 @@ class SignalParser:
             return None
         symbol = symbol_match.group(1).replace('/', '')
         
+        # Guard: Filter out common words that might be mistaken for symbols
+        if symbol in ["SIGNAL", "ALERT", "TRADE", "VIDEO", "WOLFX"]:
+            # Try to find another symbol if first one was noise
+            remaining_text = text.replace(symbol, "", 1)
+            symbol_match = re.search(self.patterns['symbol'], remaining_text)
+            if symbol_match:
+                symbol = symbol_match.group(1).replace('/', '')
+            else:
+                self.logger.debug(f"Symbol found was noise ({symbol}) and no other found.")
+                return None
+        
         # 2. Extract Side
         type_match = re.search(self.patterns['type'], text)
         side = None
@@ -60,10 +74,17 @@ class SignalParser:
         
         # If no keyword entry found, try extracting price directly after BUY/SELL
         if not entry:
-            inline_pattern = r'(?:BUY|SELL|LONG|SHORT)\s+(\d+\.?\d*)'
-            inline_match = re.search(inline_pattern, text)
-            if inline_match:
-                entry = inline_match.group(1)
+            # Case 1: BUY [SYMBOL] 123.45 (New format)
+            inline_sym_pattern = r'(?:BUY|SELL|LONG|SHORT)\s+[A-Z0-9/]+\s+(\d+\.?\d*)'
+            inline_sym_match = re.search(inline_sym_pattern, text)
+            if inline_sym_match:
+                entry = inline_sym_match.group(1)
+            else:
+                # Case 2: BUY 123.45
+                inline_pattern = r'(?:BUY|SELL|LONG|SHORT)\s+(\d+\.?\d*)'
+                inline_match = re.search(inline_pattern, text)
+                if inline_match:
+                    entry = inline_match.group(1)
 
         # 4. Extract SL
         sl = self._extract_value(text, self.patterns['sl'])

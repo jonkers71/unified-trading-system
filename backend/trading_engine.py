@@ -323,23 +323,36 @@ class TradingEngine:
         return current_spread <= limit
 
     def _resolve_mt5_symbol(self, raw_symbol):
-        """Resolve the actual MT5 symbol name, applying broker suffix if needed"""
-        # Try raw symbol first
-        if mt5.symbol_info(raw_symbol):
+        """Resolve the actual MT5 symbol, ensuring it is TRADEABLE (not disabled/readonly)"""
+        
+        def is_tradeable(sym):
+            info = mt5.symbol_info(sym)
+            if not info: return False
+            # Check if trade mode is disabled (0)
+            if info.trade_mode == mt5.SYMBOL_TRADE_MODE_DISABLED:
+                self.logger.warning(f"Symbol {sym} exists but TRADING IS DISABLED (mode={info.trade_mode})")
+                return False
+            return True
+
+        # 1. Try raw symbol
+        if is_tradeable(raw_symbol):
             mt5.symbol_select(raw_symbol, True)
             return raw_symbol
         
-        # Try with broker suffix
+        # 2. Try with broker suffix
         suffix = self.config['trading'].get('symbol_suffix', '')
         if suffix:
             suffixed = raw_symbol + suffix
-            if mt5.symbol_info(suffixed):
+            if is_tradeable(suffixed):
                 mt5.symbol_select(suffixed, True)
-                self.logger.debug(f"Symbol resolved: {raw_symbol} -> {suffixed}")
+                self.logger.debug(f"Symbol resolved to tradeable variant: {raw_symbol} -> {suffixed}")
                 return suffixed
         
-        # Symbol not found
-        self.logger.error(f"Symbol {raw_symbol} not found in MT5 (tried suffix: {suffix})")
+        # 3. Last ditch: If we found the raw symbol but it was disabled, and no suffix worked, 
+        # maybe we should just return it and let the order fail? 
+        # No, better to return None so we don't spam errors about "Tick data".
+        
+        self.logger.error(f"❌ Symbol {raw_symbol} not found or TRADING DISABLED (checked suffix: '{suffix}')")
         return None
 
     async def execute_trade(self, signal):

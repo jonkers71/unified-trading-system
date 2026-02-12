@@ -3,17 +3,18 @@
 This is a modern, consolidated trading engine designed for local deployment on **Proxmox (Windows VM)**. It eliminates the need for MT5 Expert Advisors and JSON file polling, achieving execution speeds of **<50ms**.
 
 ## ✨ Features
-- **Consolidated Core**: One Python service handles Telegram, MT5, and Bybit.
-- **Direct Library Control**: No MT5 EA (`.mq5`) required.
+- **Consolidated Core**: One Python service handles Telegram, MT5, and Bybit environments (Mainnet/Testnet).
+- **Direct Library Control**: No MT5 EA (`.mq5`) required—achieving sub-50ms execution.
 - **Advanced TP Management**: Supports Hybrid (Partial Close), Multi-Position, and Target Selection.
-- **Modern Dashboard**: Web-based monitoring and remote control.
-- **Persistent Settings**: Configurable via UI without touching code.
+- **Modern Dashboard**: Professional Mission Control for real-time monitoring and remote control.
+- **Dynamic Configuration**: Change Risk %, TP modes, and Communication Nodes instantly via UI.
+- **Smart Symbol Resolution**: Automatically detects and switches to tradable broker symbols (e.g., EURUSD -> EURUSD+).
 
 ## 📁 Structure
-- `/backend`: FastAPI server + Trading Engine core.
-- `/frontend`: Vanilla SPA Dashboard (Zero build step).
-- `/config`: YAML-based settings logic.
-- `/logs`: Centralized diagnostic logging.
+- `/backend`: FastAPI server + Zero-Latency Trading Engine.
+- `/frontend`: Vanilla SPA Dashboard (High-performance, zero build step).
+- `/config`: Persistent YAML settings management.
+- `/logs`: Centralized diagnostic logging with Emoji support.
 
 ## 🛠️ Installation (On Proxmox Windows VM)
 
@@ -22,16 +23,17 @@ This is a modern, consolidated trading engine designed for local deployment on *
    ```bash
    pip install -r requirements.txt
    ```
-3. **Configure API Keys**: Edit `config/settings.yaml` with your Telegram, MT5, and Bybit credentials.
+3. **Configure API Keys**: Edit `config/settings.yaml` (Base credentials).
 4. **Run the System**:
    ```bash
    python run.py
    ```
 
 ## 🖥️ Using the Dashboard
-1. Open your browser to `http://localhost:8000/frontend/index.html` (or serve via Python `http.server`).
-2. Monitor live signals and positions in real-time.
-3. Use the **Settings** tab to adjust Risk % and TP modes on the fly.
+1. Open your browser to `http://localhost:8000/frontend/index.html`.
+2. **Terminal**: Monitor live executions and engine health.
+3. **System Parameters**: Adjust Risk %, Execution Modes, and Broker Suffixes.
+4. **Signal Nodes**: Manage Authorized Channel IDs for instant hot-reloading.
 
 ## 🔍 Discovery Tool
 To find your Telegram channel IDs:
@@ -40,6 +42,6 @@ python discovery.py
 ```
 
 ## 🛡️ Trade Management
-- **Risk Manager**: Automatically calculates lot sizes based on your account balance and stop loss distance.
-- **Signal Parser**: Normalizes inconsistent Telegram message formats into professional trade objects.
-- **Safety**: Includes emergency stop logic and spread protection.
+- **Risk Manager**: Instant lot size calculation based on live equity and SL distance.
+- **Signal Parser**: Broad format support including Emojis (`🤑`, `🔴`, `💰`), inline prices, and noise filtering.
+- **Safety**: Built-in spread protection, trade-mode validation, and emergency abort mission protocols.
