@@ -261,6 +261,37 @@ class TradingEngine:
                  # Implementation for market closing bybit position...
                  pass
 
+    async def process_manual_signal(self, text, asset_type='forex'):
+        """Manually process a signal text (for UI testing)"""
+        self.logger.info(f"🧪 Manual Signal Injection [Type: {asset_type}]: {text[:50]}...")
+        
+        # Mock channel info for parsing
+        channel_info = {
+            'name': 'MANUAL_TEST',
+            'id': 'UI',
+            'type': asset_type
+        }
+        
+        signal = self.parser.parse_message(text, channel_info)
+        if not signal:
+            self.logger.error("❌ Manual Parse Failed")
+            return {"status": "error", "message": "Failed to parse signal text"}
+            
+        self.logger.info(f"✅ Manual Signal Parsed: {signal['side']} {signal['symbol']}")
+        
+        # Execute (standard flow)
+        if signal.get('action'):
+            await self.handle_signal_update(signal)
+            return {"status": "success", "message": f"Update {signal['action']} processed"}
+        else:
+            # Spread check
+            if not self._check_spread(signal):
+                self.logger.warning(f"🚫 Range Aborted: Spread limit for {signal['symbol']}")
+                return {"status": "error", "message": "Spread exceeds limit"}
+            
+            await self.execute_trade(signal)
+            return {"status": "success", "message": f"Trade {signal['side']} {signal['symbol']} dispatched"}
+
     def _close_mt5_position(self, pos):
         """Close an MT5 position completely"""
         request = {

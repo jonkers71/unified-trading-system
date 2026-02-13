@@ -38,7 +38,7 @@ This is a modern, consolidated trading engine designed for local deployment on *
 ## 🔍 Discovery Tool
 To find your Telegram channel IDs:
 ```bash
-python discovery.py
+python scripts/discovery.py
 ```
 
 ## 🛡️ Trade Management

@@ -570,6 +570,23 @@
 
             <div class="card">
                 <div class="card-header">
+                    <h3>Manual Command Uplink</h3>
+                </div>
+                <div class="setting-field" style="margin-bottom: 1rem;">
+                    <label>Raw Signal Text</label>
+                    <textarea id="manual-signal-text" rows="3"
+                        style="width: 100%; background: rgba(0,0,0,0.3); border: 1px solid var(--border); color: white; border-radius: 0.75rem; padding: 1rem; font-family: 'JetBrains Mono'; resize: vertical;"
+                        placeholder="BUY XAUUSD 5055.8&#10;🤑TP1: 5057.8..."></textarea>
+                </div>
+                <div class="field-row">
+                    <button class="btn" onclick="injectSignal('forex')">Inject Forex/MT5</button>
+                    <button class="btn" style="background: var(--warning); color: black;"
+                        onclick="injectSignal('crypto')">Inject Crypto/Bybit</button>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-header">
                     <h3>Recent Executions</h3>
                 </div>
                 <table class="trade-table">
@@ -872,6 +889,30 @@
                 alert(data.message);
             } catch (e) {
                 alert("TOGGLE ERROR: " + e);
+            }
+        }
+
+        async function injectSignal(type) {
+            const text = document.getElementById('manual-signal-text').value;
+            if (!text.trim()) {
+                alert("Please enter signal text");
+                return;
+            }
+
+            try {
+                const res = await fetch('/engine/inject-signal', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ text: text, asset_type: type })
+                });
+                const result = await res.json();
+                if (result.status === 'success') {
+                    alert("COMMAND DISPATCHED: " + result.message);
+                } else {
+                    alert("SYSTEM REJECTION: " + result.message);
+                }
+            } catch (e) {
+                alert("UPLINK FAILED: " + e);
             }
         }
 

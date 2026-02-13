@@ -120,6 +120,17 @@ async def update_settings(data: ConfigUpdate):
             
     return {"status": "error", "message": "Engine not initialized"}
 
+class ManualSignal(BaseModel):
+    text: str
+    asset_type: str = "forex"
+
+@app.post("/engine/inject-signal")
+async def inject_signal(data: ManualSignal):
+    if engine:
+        result = await engine.process_manual_signal(data.text, data.asset_type)
+        return result
+    return {"status": "error", "message": "Engine not initialized"}
+
 @app.post("/engine/toggle-trades")
 async def toggle_trades():
     if engine:
