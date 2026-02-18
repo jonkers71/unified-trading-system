@@ -564,6 +564,7 @@
                     <canvas id="equityChart" height="200" style="max-height: 250px"></canvas>
                 </div>
             </div>
+            <!-- Active Nodes -->
             <div class="card">
                 <div class="card-header">
                     <h3>Active Comms Nodes</h3>
@@ -573,6 +574,8 @@
                     </div>
                 </div>
             </div>
+
+            <!-- Manual Injection -->
             <div class="card">
                 <div class="card-header">
                     <h3>Manual Command Uplink</h3>
@@ -590,6 +593,7 @@
                 </div>
             </div>
 
+            <!-- Recent Log -->
             <div class="card">
                 <div class="card-header">
                     <h3>Recent Executions</h3>
@@ -607,7 +611,7 @@
                     <tbody id="signal-log-dash">
                         <tr>
                             <td colspan="5" style="text-align:center; padding: 2rem; color: var(--text-secondary)">
-                                Scanning for signals...</td>
+                                Scanning...</td>
                         </tr>
                     </tbody>
                 </table>
@@ -802,12 +806,12 @@
     <script>
 
         function showTab(tabId) {
-            document.querySelectorAll('.tab-content').forEach(t => t.style.display = 'none');
+            document.querySelectorAll('.tab-content').forEach(t => t.style.display = 'none !important');
             document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
 
             const target = document.getElementById(tabId);
             if (target) {
-                target.style.display = 'block';
+                target.style.setProperty('display', 'block', 'important');
                 event.currentTarget.classList.add('active');
             }
         }
