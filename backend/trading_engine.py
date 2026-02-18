@@ -2,7 +2,11 @@ import MetaTrader5 as mt5
 import asyncio
 import logging
 import time
+import json
+import os
+from datetime import datetime, timedelta
 from pybit.unified_trading import HTTP
+from pybit.exceptions import InvalidRequestError, FailedRequestError
 from telethon import TelegramClient, events
 from .signal_parser import SignalParser
 from .risk_manager import RiskManager
@@ -19,6 +23,7 @@ class TradingEngine:
         # Latency tracking
         self.mt5_latency = 0
         self.bybit_latency = 0
+        self.bybit_status = "INITIALIZING"
         
         # Trade Monitoring
         self.trade_history = []
@@ -28,8 +33,18 @@ class TradingEngine:
         self.active_signals = {} # map signal_id -> status
         self.monitored_channels = config.get('channels', [])
         
+        # Performance Stats
+        self.performance_stats = {
+            "rolling_7d": {"labels": [], "data": []},
+            "historical": {"labels": [], "data": []}
+        }
+        
         # Operational Control
         self.new_trades_enabled = True
+        
+        # Persistence
+        self.state_file = "logs/state.json"
+        os.makedirs("logs", exist_ok=True)
 
     async def start(self):
         """Initialize all connections"""
@@ -47,11 +62,17 @@ class TradingEngine:
             self.bybit_session = HTTP(
                 testnet=self.config['bybit']['testnet'],
                 api_key=self.config['bybit']['api_key'],
-                api_secret=self.config['bybit']['api_secret']
+                api_secret=self.config['bybit']['api_secret'],
+                recv_window=10000 # Increased for Proxmox drift protection
             )
-            self.logger.info("✅ Bybit API Connected")
+            # Perform hard validation at startup
+            await self._validate_bybit_auth()
             
-        # 3. Telegram Initialize
+        # 3. Load Persistent State & Reconcile
+        self._load_state()
+        await self._reconcile_positions()
+        
+        # 4. Telegram Initialize
         self.client = TelegramClient(
             self.config['telegram']['session_name'],
             self.config['telegram']['api_id'],
@@ -68,9 +89,240 @@ class TradingEngine:
         # Start Background Monitors
         asyncio.create_task(self._latency_monitor_loop())
         asyncio.create_task(self._protection_monitor_loop())
+        asyncio.create_task(self._performance_update_loop())
         
         # Keep engine running
         await self.client.run_until_disconnected()
+
+    def _save_state(self):
+        """Save active signals and state to disk"""
+        try:
+            state = {
+                "active_signals": self.active_signals,
+                "daily_profit": self.daily_profit,
+                "trade_history": self.trade_history[-50:] # Keep last 50 for dashboard resume
+            }
+            with open(self.state_file, "w") as f:
+                json.dump(state, f, indent=4)
+        except Exception as e:
+            self.logger.error(f"Failed to save state: {e}")
+
+    def _load_state(self):
+        """Load state from disk on startup"""
+        if not os.path.exists(self.state_file):
+            return
+            
+        try:
+            with open(self.state_file, "r") as f:
+                state = json.load(f)
+                self.active_signals = state.get("active_signals", {})
+                self.daily_profit = state.get("daily_profit", 0.0)
+                self.trade_history = state.get("trade_history", [])
+                self.logger.info(f"📂 State Loaded: {len(self.active_signals)} active signals restored.")
+        except Exception as e:
+            self.logger.error(f"Failed to load state: {e}")
+
+    async def _reconcile_positions(self):
+        """Verify internal state against actual broker positions"""
+        self.logger.info("🔍 Reconciling positions with brokers...")
+        
+        # 1. MT5 Reconciliation
+        if self.config['mt5']['enabled']:
+            positions = mt5.positions_get(magic=self.config['mt5']['magic_number'])
+            if positions is None:
+                self.logger.error(f"Failed to get MT5 positions: {mt5.last_error()}")
+            else:
+                active_tickets = {str(p.ticket) for p in positions}
+                
+                # Check for orphans (Positions in MT5 but not in our state)
+                for p in positions:
+                    found = False
+                    for sig_id, sig in self.active_signals.items():
+                        if str(sig.get('ticket')) == str(p.ticket) or str(sig.get('id')) == str(p.ticket):
+                            found = True
+                            break
+                    
+                    if not found:
+                        self.logger.info(f"🔗 Linking orphan MT5 position: {p.symbol} (Ticket: {p.ticket})")
+                        # Create a basic signal object to track it
+                        new_sig_id = f"RETORED_{p.ticket}"
+                        self.active_signals[new_sig_id] = {
+                            "symbol": p.symbol,
+                            "side": "BUY" if p.type == mt5.POSITION_TYPE_BUY else "SELL",
+                            "entry": p.price_open,
+                            "sl": p.sl,
+                            "tps": [p.tp] if p.tp > 0 else [],
+                            "ticket": p.ticket,
+                            "restored": True,
+                            "channel_name": "Restored"
+                        }
+                        
+                        # Add to history for dashboard visibility
+                        self.trade_history.append({
+                            "time": time.strftime("%H:%M:%S"),
+                            "symbol": p.symbol,
+                            "type": "BUY" if p.type == mt5.POSITION_TYPE_BUY else "SELL",
+                            "target": "RESTORED",
+                            "status": f"Ticket #{p.ticket}",
+                            "success": True
+                        })
+                
+                # Cleanup (Signals in our state but no longer in MT5)
+                # We skip signals that don't have a ticket yet (just opened)
+                to_remove = []
+                for sig_id, sig in self.active_signals.items():
+                    ticket = sig.get('ticket')
+                    if ticket and str(ticket) not in active_tickets:
+                        self.logger.info(f"🧹 Removing stale signal from state: {sig['symbol']} (Ticket: {ticket})")
+                        to_remove.append(sig_id)
+                
+                for rid in to_remove:
+                    del self.active_signals[rid]
+        
+        # 2. Bybit Reconciliation (Basic - just log for now)
+        if self.config['bybit']['enabled'] and self.bybit_session:
+            try:
+                pos_resp = self.bybit_session.get_positions(category="linear", settleCoin="USDT")
+                bybit_positions = [p for p in pos_resp.get('result', {}).get('list', []) if float(p.get('size', 0)) > 0]
+                self.logger.info(f"📡 Bybit: Found {len(bybit_positions)} active positions.")
+            except Exception as e:
+                self.logger.warning(f"Bybit reconciliation failed: {e}")
+
+        self._save_state()
+        
+        # Initial stats update
+        await self._update_performance_stats()
+
+    async def _performance_update_loop(self):
+        """Periodically refresh performance statistics"""
+        while True:
+            await asyncio.sleep(300) # Every 5 minutes
+            try:
+                await self._update_performance_stats()
+            except Exception as e:
+                self.logger.error(f"Performance loop error: {e}")
+
+    async def _update_performance_stats(self):
+        """Aggregate history from brokers for dashboard charts"""
+        self.logger.info("📊 Refreshing performance statistics...")
+        
+        all_trades = []
+        
+        # 1. Fetch MT5 History
+        if self.config['mt5']['enabled']:
+            # Fetch last 30 days
+            from_date = datetime.now() - timedelta(days=30)
+            deals = mt5.history_deals_get(from_date, datetime.now())
+            if deals is not None:
+                magic = self.config['mt5']['magic_number']
+                for d in deals:
+                    # Filter by magic number and outgoing deals (closed positions)
+                    if d.magic == magic and d.entry == mt5.DEAL_ENTRY_OUT:
+                        all_trades.append({
+                            "time": datetime.fromtimestamp(d.time),
+                            "profit": d.profit + d.commission + d.swap
+                        })
+
+        # 2. Fetch Bybit History (if possible)
+        if self.config['bybit']['enabled'] and self.bybit_session:
+            try:
+                # Bybit v5 get_closed_pnl
+                resp = self.bybit_session.get_closed_pnl(category="linear", limit=50)
+                for p in resp.get('result', {}).get('list', []):
+                    all_trades.append({
+                        "time": datetime.fromtimestamp(int(p['updatedTime'])/1000),
+                        "profit": float(p['closedPnl'])
+                    })
+            except Exception as e:
+                self.logger.debug(f"Bybit history fetch failed: {e}")
+
+        if not all_trades:
+            today = datetime.now().date()
+            self.performance_stats['rolling_7d'] = {
+                "labels": [(today - timedelta(days=i)).strftime("%m/%d") for i in range(6, -1, -1)],
+                "data": [0.0] * 7
+            }
+            self.performance_stats['historical'] = {"labels": [], "data": []}
+            return
+
+        # Sort by time
+        all_trades.sort(key=lambda x: x['time'])
+
+        # 3. Calculate Rolling 7D (Daily Buckets)
+        today = datetime.now().date()
+        rolling_data = {}
+        for i in range(7):
+            d = today - timedelta(days=i)
+            rolling_data[d] = 0.0
+            
+        for t in all_trades:
+            t_date = t['time'].date()
+            if t_date in rolling_data:
+                rolling_data[t_date] += t['profit']
+        
+        sorted_rolling = sorted(rolling_data.items())
+        self.performance_stats['rolling_7d'] = {
+            "labels": [d.strftime("%m/%d") for d, _ in sorted_rolling],
+            "data": [round(v, 2) for _, v in sorted_rolling]
+        }
+
+        # 4. Calculate Historical Equity Curve (Cumulative)
+        cumulative = 0
+        hist_labels = []
+        hist_data = []
+        
+        daily_hist = {}
+        for t in all_trades:
+            t_date = t['time'].date()
+            daily_hist[t_date] = daily_hist.get(t_date, 0.0) + t['profit']
+            
+        sorted_hist = sorted(daily_hist.items())
+        for d, p in sorted_hist:
+            cumulative += p
+            hist_labels.append(d.strftime("%m/%d"))
+            hist_data.append(round(cumulative, 2))
+            
+        self.performance_stats['historical'] = {
+            "labels": hist_labels,
+            "data": hist_data
+        }
+        self.logger.info(f"📈 Analytics Updated: {len(all_trades)} trades compiled.")
+
+    async def _validate_bybit_auth(self):
+        """Hard validation of Bybit credentials and permissions at startup"""
+        try:
+            # 1. Key & Permission Check
+            key_info = self.bybit_session.get_api_key_information()
+            permissions = key_info.get('result', {}).get('permissions', {})
+            
+            # Check for 'SpotTrade' or 'ContractTrade' depending on category
+            # For Unified account, we usually check 'SpotTrade' and 'ContractTrade'
+            has_trade = any('Trade' in p for p in permissions.get('Spot', []) + permissions.get('Contract', []))
+            
+            if not has_trade:
+                self.logger.error("❌ Bybit Auth Error: API Key lacks 'Trade' permissions.")
+                self.bybit_status = "LACKS TRADE PERM"
+            else:
+                self.logger.info("✅ Bybit API Connected & Authenticated")
+                self.bybit_status = "AUTHENTICATED"
+                
+        except InvalidRequestError as e:
+            mode = "Testnet" if self.config['bybit']['testnet'] else "Mainnet"
+            if e.ret_code == 10003:
+                self.logger.error(f"❌ Bybit Auth Error: Invalid API Key for {mode}. Check config (testnet={self.config['bybit']['testnet']}).")
+                self.bybit_status = "INVALID KEYS"
+            elif e.ret_code == 10004:
+                 self.logger.error("❌ Bybit Auth Error: Invalid Signature. Check API Secret.")
+                 self.bybit_status = "SIGNATURE ERROR"
+            elif e.ret_code == 10002:
+                self.logger.error("❌ Bybit Auth Error: Clock sync issue (10002). Increase recv_window or sync time.")
+                self.bybit_status = "CLOCK ERROR"
+            else:
+                self.logger.error(f"❌ Bybit API Error [{e.ret_code}]: {e.message}")
+                self.bybit_status = f"API ERR {e.ret_code}"
+        except Exception as e:
+            self.logger.error(f"❌ Bybit Connection Failed: {e}")
+            self.bybit_status = "CONN FAILED"
 
     async def _latency_monitor_loop(self):
         """Background task to update connection latency metrics"""
@@ -81,22 +333,22 @@ class TradingEngine:
                     mt5.terminal_info()
                     self.mt5_latency = int((time.perf_counter() - start) * 1000)
                 
-                if self.config['bybit']['enabled']:
+                if self.config['bybit']['enabled'] and self.bybit_session:
                     start = time.perf_counter()
                     try:
-                        # Try multiple common method names for Bybit server time
-                        if hasattr(self.bybit_session, 'get_server_time'):
-                            self.bybit_session.get_server_time()
-                        elif hasattr(self.bybit_session, 'get_time'):
-                            self.bybit_session.get_time()
-                        else:
-                            # Fallback: simple public request to check connectivity/latency
-                            self.bybit_session.get_instruments_info(category="linear", limit=1)
-                    except Exception:
-                        # If a specific call fails, we still want to record the attempt for latency if possible, 
-                        # but we catch it here to avoid the generic loop error spamming.
-                        pass
-                    self.bybit_latency = int((time.perf_counter() - start) * 1000)
+                        # Use a lightweight authenticated call to verify session health
+                        self.bybit_session.get_api_key_information()
+                        self.bybit_latency = int((time.perf_counter() - start) * 1000)
+                    except Exception as e:
+                        # LOG the error so it's not silent
+                        self.logger.debug(f"Bybit background health check failed: {e}")
+                        self.bybit_latency = -1 # Indicate error
+                        
+                        # Only update status if it was previously authenticated (don't overwrite deep startup errors)
+                        if self.bybit_status == "AUTHENTICATED":
+                            self.bybit_status = "CONN LOST"
+                        elif "API key is invalid" in str(e):
+                             self.bybit_status = "INVALID KEYS"
             except Exception as e:
                 self.logger.warning(f"Latency check error: {e}")
             await asyncio.sleep(10)
@@ -121,53 +373,102 @@ class TradingEngine:
             if pos.magic != self.config['mt5']['magic_number']: continue
             
             symbol = pos.symbol
+            info = mt5.symbol_info(symbol)
+            if not info: continue
+
             # Get current settings
             be_enabled = self.config['trading'].get('be_enabled', True)
-            be_buffer = self.config['trading'].get('be_buffer', 5.0)
+            be_buffer_pips = self.config['trading'].get('be_buffer', 5.0)
             trailing_enabled = self.config['trading'].get('trailing_enabled', True)
-            trailing_dist = self.config['trading'].get('trailing_distance', 15.0)
+            trailing_dist_pips = self.config['trading'].get('trailing_distance', 15.0)
             
             tick = mt5.symbol_info_tick(symbol)
             if not tick: continue
             
+            point = info.point
+            # In MT5, 1 pip = 10 points for most pairs, but for Gold it can vary.
+            # We'll treat the user's "pips" as 10 * point for consistency with common usage.
+            pip_unit = point * 10 
+            
             current_price = tick.bid if pos.type == mt5.POSITION_TYPE_BUY else tick.ask
             profit_points = (current_price - pos.price_open) if pos.type == mt5.POSITION_TYPE_BUY else (pos.price_open - current_price)
             
-            # 1. Breakeven Logic (Move SL to Entry + Buffer after TP1)
-            # We assume TP1 is reached if profit is > distance to TP1
-            # For simplicity, we can also check if the position is "Hybrid" and profit is significant
-            if be_enabled and pos.sl < pos.price_open and "Hybrid" in pos.comment:
-                # If we are in profit by at least 20 pips (example threshold for TP1)
-                # Ideally, we should fetch the original signal's TP1 value
-                if profit_points > 0.0020: # Example logic for major pairs
-                    new_sl = pos.price_open + (be_buffer * 0.0001) if pos.type == mt5.POSITION_TYPE_BUY else pos.price_open - (be_buffer * 0.0001)
-                    self._modify_sl(pos.ticket, new_sl)
+            # CRITICAL: Find the original signal to check TP1
+            # We use the ticket or symbol to find associated signal data
+            signal_data = next((s for s in self.active_signals.values() if s['symbol'] == symbol or s.get('ticket') == pos.ticket), None)
+            
+            # If no signal data (e.g. engine restarted), we can't safely verify TP1, so we skip movement 
+            # to avoid moving SL too early.
+            if not signal_data: continue
+
+            tp1 = signal_data['tps'][0]
+            
+            # Check if TP1 has been reached (or current price is beyond it)
+            tp1_reached = False
+            if pos.type == mt5.POSITION_TYPE_BUY:
+                if tick.bid >= tp1: tp1_reached = True
+            else: # SELL
+                if tick.ask <= tp1: tp1_reached = True
+
+            if not tp1_reached:
+                continue # Do not move Stop Loss until TP1 is hit
+
+            # 1. Breakeven Logic (Move SL to Entry + Buffer)
+            if be_enabled and pos.sl < pos.price_open:
+                new_sl = pos.price_open + (be_buffer_pips * point) if pos.type == mt5.POSITION_TYPE_BUY else pos.price_open - (be_buffer_pips * point)
+                self._modify_sl(pos, new_sl, info)
             
             # 2. Trailing Stop Logic
             if trailing_enabled:
-                threshold = trailing_dist * 0.0001
+                threshold = trailing_dist_pips * point
                 if pos.type == mt5.POSITION_TYPE_BUY:
-                    if current_price - pos.sl > (threshold * 2): # If price moved significantly away from SL
+                    # Move UP if price is far enough from current SL
+                    if current_price - pos.sl > (threshold * 1.5):
                         new_sl = current_price - threshold
                         if new_sl > pos.sl:
-                            self._modify_sl(pos.ticket, new_sl)
+                            self._modify_sl(pos, new_sl, info)
                 else: # SELL
-                    if pos.sl - current_price > (threshold * 2):
+                    # Move DOWN
+                    if (pos.sl == 0 or pos.sl - current_price > (threshold * 1.5)):
                         new_sl = current_price + threshold
                         if pos.sl == 0 or new_sl < pos.sl:
-                           self._modify_sl(pos.ticket, new_sl)
+                            self._modify_sl(pos, new_sl, info)
 
-    def _modify_sl(self, ticket, new_sl):
+    def _modify_sl(self, pos, new_sl, info):
+        """Internal helper to modify SL with Stop Level guards"""
+        # Ensure we respect the broker's minimum stop distance
+        tick = mt5.symbol_info_tick(pos.symbol)
+        if not tick: return
+
+        # Stop Level is in points
+        stop_level_price = info.trade_stops_level * info.point
+        
+        # Check distance from current price
+        if pos.type == mt5.POSITION_TYPE_BUY:
+            if tick.bid - new_sl < stop_level_price:
+                # Adjust to minimum allowed distance
+                new_sl = tick.bid - stop_level_price - (info.point * 2) 
+        else:
+            if new_sl - tick.ask < stop_level_price:
+                new_sl = tick.ask + stop_level_price + (info.point * 2)
+
+        # Final sanity check: don't move SL backwards
+        if pos.type == mt5.POSITION_TYPE_BUY:
+            if new_sl <= pos.sl: return
+        else:
+            if pos.sl != 0 and new_sl >= pos.sl: return
+
         request = {
             "action": mt5.TRADE_ACTION_SLTP,
-            "position": ticket,
-            "sl": new_sl
+            "position": pos.ticket,
+            "sl": round(new_sl, info.digits),
+            "tp": pos.tp
         }
         result = mt5.order_send(request)
         if result.retcode != mt5.TRADE_RETCODE_DONE:
-            self.logger.error(f"Failed to modify SL for {ticket}: {result.comment}")
+            self.logger.warning(f"⚠️ SL Modify Rejection [{pos.symbol}]: {result.comment} (Code: {result.retcode})")
         else:
-            self.logger.info(f"✅ SL Modified for {ticket} to {new_sl}")
+            self.logger.info(f"✅ SL Optimized for {pos.symbol} #{pos.ticket} -> {new_sl}")
 
     async def on_message_received(self, event):
         """Handle incoming signals from Telegram"""
@@ -241,7 +542,11 @@ class TradingEngine:
                         
                         if action == "MOVE_SL":
                             new_sl = pos.price_open if val == "BE" else float(val)
-                            self._modify_sl(pos.ticket, new_sl)
+                            info = mt5.symbol_info(symbol)
+                            if info:
+                                self._modify_sl(pos, new_sl, info)
+                            else:
+                                self.logger.error(f"Failed to get info for {symbol} during SL update")
                         elif action == "CLOSE":
                             self._close_mt5_position(pos)
                 else:
@@ -249,17 +554,52 @@ class TradingEngine:
                         
         # 2. Bybit Updates
         if self.config['bybit']['enabled'] and self.bybit_session:
-             # Basic implementation: update SL or close all for symbol
-             if action == "MOVE_SL":
-                 try:
-                     self.bybit_session.set_trading_stop(
-                         category="linear", symbol=raw_symbol, stopLoss=str(val), positionIdx=0
-                     )
-                 except Exception as e:
-                     self.logger.error(f"Bybit SL Update Error: {e}")
-             elif action == "CLOSE":
-                 # Implementation for market closing bybit position...
-                 pass
+            # Resolve Bybit Symbol (remove suffix if needed)
+            raw_symbol = symbol.replace(self.config['trading'].get('symbol_suffix', ''), '')
+            
+            if action == "MOVE_SL":
+                try:
+                    self.bybit_session.set_trading_stop(
+                        category="linear", symbol=raw_symbol, stopLoss=str(val), positionIdx=0
+                    )
+                    self.logger.info(f"✅ Bybit SL Updated: {raw_symbol} -> {val}")
+                    # Update local state if found
+                    rid = next((k for k, v in self.active_signals.items() if v.get('symbol') == raw_symbol), None)
+                    if rid:
+                        self.active_signals[rid]['sl'] = val
+                        self._save_state()
+                except InvalidRequestError as e:
+                    self.logger.error(f"❌ Bybit SL Update Failed [{e.ret_code}]: {e.message}")
+                except Exception as e:
+                    self.logger.error(f"⚠️ Bybit SL Update Error: {e}")
+            
+            elif action == "CLOSE":
+                try:
+                    # Closing by placing an opposite market order
+                    # 1. Get current position to find size
+                    pos_resp = self.bybit_session.get_positions(category="linear", symbol=raw_symbol)
+                    positions = pos_resp.get('result', {}).get('list', [])
+                    
+                    for p in positions:
+                        size = float(p.get('size', 0))
+                        if size > 0:
+                            side = "Sell" if p['side'] == "Buy" else "Buy"
+                            self.bybit_session.place_order(
+                                category="linear",
+                                symbol=raw_symbol,
+                                side=side,
+                                orderType="Market",
+                                qty=str(size),
+                                reduceOnly=True
+                            )
+                            self.logger.info(f"🛑 Bybit Position Closed: {raw_symbol} ({size})")
+                            # Remove from active signals
+                            rid = next((k for k, v in self.active_signals.items() if v.get('symbol') == raw_symbol), None)
+                            if rid:
+                                del self.active_signals[rid]
+                                self._save_state()
+                except Exception as e:
+                    self.logger.error(f"❌ Bybit Market Close Failed: {e}")
 
     async def process_manual_signal(self, text, asset_type='forex'):
         """Manually process a signal text (for UI testing)"""
@@ -311,6 +651,11 @@ class TradingEngine:
             self.logger.error(f"Failed to close {pos.ticket}: {result.comment}")
         else:
             self.logger.info(f"✅ Closed Position {pos.ticket}")
+            # Remove from active signals
+            rid = next((k for k, v in self.active_signals.items() if v.get('ticket') == pos.ticket), None)
+            if rid:
+                del self.active_signals[rid]
+                self._save_state()
 
     def _check_spread(self, signal):
         """Verify if current spread is within allowed limits"""
@@ -359,9 +704,9 @@ class TradingEngine:
         def is_tradeable(sym):
             info = mt5.symbol_info(sym)
             if not info: return False
-            # Check if trade mode is disabled (0)
-            if info.trade_mode == mt5.SYMBOL_TRADE_MODE_DISABLED:
-                self.logger.warning(f"Symbol {sym} exists but TRADING IS DISABLED (mode={info.trade_mode})")
+            # Ensure FULL trading is enabled (not disabled, close-only, or long/short only)
+            if info.trade_mode != mt5.SYMBOL_TRADE_MODE_FULL:
+                self.logger.warning(f"Symbol {sym} trade mode is restricted: {info.trade_mode}")
                 return False
             return True
 
@@ -579,6 +924,11 @@ class TradingEngine:
             status = "Filled"
             success = True
             
+            # Store the ticket in active_signals for protection tracking
+            signal_id = f"{symbol}_{int(time.time())}"
+            signal['ticket'] = result.order
+            self.active_signals[signal_id] = signal
+            
         self.trade_history.append({
             "time": time.strftime("%H:%M:%S"),
             "symbol": symbol,
@@ -587,6 +937,7 @@ class TradingEngine:
             "status": status,
             "success": success
         })
+        self._save_state()
 
     def _log_failed_trade(self, symbol, signal, reason):
         """Log a failure before MT5 order sending"""
@@ -599,6 +950,7 @@ class TradingEngine:
             "status": f"Error: {reason}",
             "success": False
         })
+        self._save_state()
 
     async def _execute_bybit(self, signal):
         """Bybit Logic (to be refined for Multi-TP/Partial)"""
@@ -624,12 +976,27 @@ class TradingEngine:
                     "time": time.strftime("%H:%M:%S"), "symbol": symbol, "type": signal['side'],
                     "target": "TP1", "status": f"Bybit: {qty}", "success": True
                 })
-        except Exception as e:
-            err_msg = str(e)
-            if "401" in err_msg:
-                err_msg = "Bybit Auth Error (401): Check API Keys and Ensure Mainnet/Testnet setting matches your keys."
-            self.logger.error(f"Bybit Error: {err_msg}")
+                self._save_state()
+        except InvalidRequestError as e:
+            msg = f"Bybit API Error [{e.ret_code}]: {e.message}"
+            if e.ret_code == 10002:
+                msg = "Bybit Auth Error: Clock sync issue (Error 10002). Please sync Windows clock."
+            elif e.ret_code in (10003, 10004):
+                msg = "Bybit Auth Error: Invalid API Keys or Environment (Testnet/Mainnet) mismatch."
+            elif e.ret_code == 10005:
+                msg = "Bybit Auth Error: API Key lacks 'Trade' permissions."
+                
+            self.logger.error(f"❌ {msg}")
             self.trade_history.append({
                 "time": time.strftime("%H:%M:%S"), "symbol": symbol, "type": signal['side'],
-                "target": "--", "status": f"Bybit Err: {err_msg[:20]}...", "success": False
+                "target": "--", "status": f"Bybit: {e.ret_code}", "success": False
+            })
+            self._save_state()
+        except FailedRequestError as e:
+            self.logger.error(f"❌ Bybit HTTP Error: {e.message} (Status: {e.status_code})")
+        except Exception as e:
+            self.logger.error(f"❌ Bybit Execution Error: {e}")
+            self.trade_history.append({
+                "time": time.strftime("%H:%M:%S"), "symbol": symbol, "type": signal['side'],
+                "target": "--", "status": "Bybit: Error", "success": False
             })

@@ -553,21 +553,26 @@
             <div class="content-grid">
                 <div class="card">
                     <div class="card-header">
-                        <h3>Performance Matrix</h3>
+                        <h3>7-Day Rolling Performance</h3>
                     </div>
                     <canvas id="performanceChart" height="200" style="max-height: 250px"></canvas>
                 </div>
                 <div class="card">
                     <div class="card-header">
-                        <h3>Active Comms Nodes</h3>
+                        <h3>Historical Equity Curve</h3>
                     </div>
-                    <div class="channel-list" id="monitored-channels-dash">
-                        <div style="text-align:center; padding: 2rem; color: var(--text-secondary)">Syncing Channels...
-                        </div>
+                    <canvas id="equityChart" height="200" style="max-height: 250px"></canvas>
+                </div>
+            </div>
+            <div class="card">
+                <div class="card-header">
+                    <h3>Active Comms Nodes</h3>
+                </div>
+                <div class="channel-list" id="monitored-channels-dash">
+                    <div style="text-align:center; padding: 2rem; color: var(--text-secondary)">Syncing Channels...
                     </div>
                 </div>
             </div>
-
             <div class="card">
                 <div class="card-header">
                     <h3>Manual Command Uplink</h3>
@@ -795,39 +800,6 @@
     </main>
 
     <script>
-        let perfChart;
-        const ctx = document.getElementById('performanceChart').getContext('2d');
-
-        function initChart() {
-            perfChart = new Chart(ctx, {
-                type: 'line',
-                data: {
-                    labels: [],
-                    datasets: [{
-                        label: 'P/L Real-time',
-                        data: [],
-                        borderColor: '#3b82f6',
-                        backgroundColor: 'rgba(59, 130, 246, 0.05)',
-                        fill: true,
-                        tension: 0.4,
-                        borderWidth: 2,
-                        pointRadius: 0
-                    }]
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    plugins: { legend: { display: false } },
-                    scales: {
-                        x: { display: false },
-                        y: {
-                            grid: { color: 'rgba(255,255,255,0.03)' },
-                            ticks: { color: '#64748b', font: { size: 10, family: 'JetBrains Mono' } }
-                        }
-                    }
-                }
-            });
-        }
 
         function showTab(tabId) {
             document.querySelectorAll('.tab-content').forEach(t => t.style.display = 'none');
@@ -916,6 +888,60 @@
             }
         }
 
+        let perfChart = null;
+        let equityChart = null;
+
+        function initCharts() {
+            const ctx1 = document.getElementById('performanceChart').getContext('2d');
+            perfChart = new Chart(ctx1, {
+                type: 'bar',
+                data: {
+                    labels: [],
+                    datasets: [{
+                        label: 'Daily P/L ($)',
+                        data: [],
+                        backgroundColor: '#3b82f6',
+                        borderRadius: 4
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        y: { grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#94a3b8' } },
+                        x: { grid: { display: false }, ticks: { color: '#94a3b8' } }
+                    },
+                    plugins: { legend: { display: false } }
+                }
+            });
+
+            const ctx2 = document.getElementById('equityChart').getContext('2d');
+            equityChart = new Chart(ctx2, {
+                type: 'line',
+                data: {
+                    labels: [],
+                    datasets: [{
+                        label: 'Cumulative P/L ($)',
+                        data: [],
+                        borderColor: '#10b981',
+                        borderWidth: 2,
+                        fill: true,
+                        backgroundColor: 'rgba(16, 185, 129, 0.1)',
+                        tension: 0.4
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        y: { grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#94a3b8' } },
+                        x: { grid: { display: false }, ticks: { color: '#94a3b8' } }
+                    },
+                    plugins: { legend: { display: false } }
+                }
+            });
+        }
+
         async function fetchStatus() {
             try {
                 const res = await fetch('/status');
@@ -954,7 +980,12 @@
                 const bybitTxt = document.getElementById('status-bybit-text');
                 bybitVal.innerText = data.bybit_connected ? `${data.bybit_latency}ms` : '--';
                 bybitVal.style.color = data.bybit_connected ? 'var(--success)' : 'var(--error)';
-                bybitTxt.innerText = data.bybit_connected ? 'UPLINK ACTIVE' : 'NO CARRIER';
+                bybitTxt.innerText = data.bybit_status || (data.bybit_connected ? 'UPLINK ACTIVE' : 'NO CARRIER');
+                if (data.bybit_status && data.bybit_status !== 'AUTHENTICATED') {
+                    bybitTxt.style.color = 'var(--error)';
+                } else {
+                    bybitTxt.style.color = 'var(--text-secondary)';
+                }
 
                 // Profit
                 const profitEl = document.getElementById('daily-profit');
@@ -998,16 +1029,16 @@
 
 
 
-                // Chart
-                if (perfChart) {
-                    const now = new Date().toLocaleTimeString();
-                    perfChart.data.labels.push(now);
-                    perfChart.data.datasets[0].data.push(data.daily_profit);
-                    if (perfChart.data.labels.length > 30) {
-                        perfChart.data.labels.shift();
-                        perfChart.data.datasets[0].data.shift();
-                    }
+                // Charts Update
+                if (perfChart && data.performance_stats.rolling_7d.labels.length > 0) {
+                    perfChart.data.labels = data.performance_stats.rolling_7d.labels;
+                    perfChart.data.datasets[0].data = data.performance_stats.rolling_7d.data;
                     perfChart.update('none');
+                }
+                if (equityChart && data.performance_stats.historical.labels.length > 0) {
+                    equityChart.data.labels = data.performance_stats.historical.labels;
+                    equityChart.data.datasets[0].data = data.performance_stats.historical.data;
+                    equityChart.update('none');
                 }
 
                 // Channels Populate (Dashboard and Nodes Tab)
@@ -1044,12 +1075,50 @@
                 const logFull = document.getElementById('signal-log-full');
                 if (logFull) logFull.innerHTML = logHtml;
 
+                // Active Positions Rendering
+                const posList = document.getElementById('live-positions-list');
+                if (posList) {
+                    const signals = Object.values(data.active_signals || {});
+                    if (signals.length > 0) {
+                        posList.innerHTML = `
+                            <table class="trade-table">
+                                <thead>
+                                    <tr>
+                                        <th>Symbol</th>
+                                        <th>Vector</th>
+                                        <th>Entry</th>
+                                        <th>Stop Loss</th>
+                                        <th>TPs</th>
+                                        <th>Source</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    ${signals.map(s => `
+                                        <tr>
+                                            <td style="font-weight:700">${s.symbol}</td>
+                                            <td class="${s.side === 'BUY' ? 'price-up' : 'price-down'}">${s.side}</td>
+                                            <td>${s.entry}</td>
+                                            <td>${s.sl}</td>
+                                            <td>${s.tps && s.tps.length > 0 ? s.tps.join(', ') : '--'}</td>
+                                            <td><span class="badge" style="background:${s.restored ? 'var(--warning)' : 'var(--accent)'}; color:${s.restored ? 'black' : 'white'}; padding: 2px 6px; border-radius: 4px; font-size: 0.6rem; font-weight: 700;">${s.restored ? 'RESTORED' : (s.channel_name || 'System')}</span></td>
+                                        </tr>
+                                    `).join('')}
+                                </tbody>
+                            </table>
+                        `;
+                        posList.style.textAlign = 'left';
+                        posList.style.padding = '0';
+                    } else {
+                        posList.innerHTML = '<div style="text-align:center; padding: 3rem; color: var(--text-secondary)">No active positions detected in current session.</div>';
+                    }
+                }
+
             } catch (e) {
                 console.error("Link Lost");
             }
         }
 
-        initChart();
+        initCharts();
         setInterval(fetchStatus, 3000);
         fetchStatus();
     </script>

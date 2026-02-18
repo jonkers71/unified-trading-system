@@ -71,12 +71,15 @@ async def get_status():
         "mt5_connected": True if engine and engine.config['mt5']['enabled'] else False,
         "mt5_latency": engine.mt5_latency if engine else 0,
         "bybit_connected": True if engine and engine.config['bybit']['enabled'] else False,
+        "bybit_status": engine.bybit_status if engine else "OFFLINE",
         "bybit_latency": engine.bybit_latency if engine else 0,
         "daily_profit": engine.daily_profit if engine else 0.0,
         "trade_history": engine.trade_history if engine else [],
         "monitored_channels": engine.monitored_channels if engine else [],
         "settings": engine.config.get('trading', {}) if engine else {},
-        "new_trades_enabled": engine.new_trades_enabled if engine else True
+        "new_trades_enabled": engine.new_trades_enabled if engine else True,
+        "active_signals": engine.active_signals if engine else {},
+        "performance_stats": engine.performance_stats if engine else {"rolling_7d": {"labels": [], "data": []}, "historical": {"labels": [], "data": []}}
     }
 
 @app.post("/settings/update")
