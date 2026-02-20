@@ -58,10 +58,19 @@ class RiskManager:
         # Standard risk-based qty: Qty = RiskAmount / DistanceToSL
         qty = risk_amount / abs(entry - sl)
         
-        qty_step = float(symbol_rules.get('qty_step', 0.001))
+        # Get rules from Bybit V5 lotSizeFilter
+        lot_filter = symbol_rules.get('lotSizeFilter', {})
+        qty_step = float(lot_filter.get('qtyStep', symbol_rules.get('qty_step', 0.001)))
+        min_qty = float(lot_filter.get('minOrderQty', symbol_rules.get('min_qty', 0.0)))
+        
         # Round down to qty_step precision
         qty = math.floor(qty / qty_step) * qty_step
         
+        # Clamp to minimum allowed quantity
+        if qty < min_qty:
+            self.logger.info(f"Rounding up qty {qty} to minOrderQty {min_qty} for {symbol_rules.get('symbol')}")
+            qty = min_qty
+            
         return qty
 
     def validate_trade(self, signal, current_positions):

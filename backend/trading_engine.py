@@ -1118,12 +1118,14 @@ class TradingEngine:
                 })
                 self._save_state()
         except InvalidRequestError as e:
-            msg = f"Bybit API Error [{e.ret_code}]: {e.message}"
-            if e.ret_code == 10002:
+            # pybit v5 exceptions might have ret_code or retCode depending on version/context
+            ret_code = getattr(e, 'ret_code', getattr(e, 'retCode', 'UNKNOWN'))
+            msg = f"Bybit API Error [{ret_code}]: {e.message}"
+            if ret_code == 10002:
                 msg = "Bybit Auth Error: Clock sync issue (Error 10002). Please sync Windows clock."
-            elif e.ret_code in (10003, 10004):
+            elif ret_code in (10003, 10004):
                 msg = "Bybit Auth Error: Invalid API Keys or Environment (Testnet/Mainnet) mismatch."
-            elif e.ret_code == 10005:
+            elif ret_code == 10005:
                 msg = "Bybit Auth Error: API Key lacks 'Trade' permissions."
                 
             self.logger.error(f"❌ {msg}")
