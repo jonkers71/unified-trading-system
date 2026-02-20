@@ -956,6 +956,16 @@ class TradingEngine:
         """Bybit Logic (to be refined for Multi-TP/Partial)"""
         # For now keeping basic, will expand if user specifically asks for Bybit TP split
         symbol = signal['symbol']
+        
+        # Guard: Don't attempt trades if Bybit never authenticated
+        if self.bybit_status != "AUTHENTICATED":
+            self.logger.error(f"❌ Bybit Skipped: Not authenticated (Status: {self.bybit_status})")
+            self.trade_history.append({
+                "time": time.strftime("%H:%M:%S"), "symbol": symbol, "type": signal['side'],
+                "target": "--", "status": f"Bybit: {self.bybit_status}", "success": False
+            })
+            return
+        
         side = "Buy" if signal['side'] == "BUY" else "Sell"
         try:
             balance_resp = self.bybit_session.get_wallet_balance(accountType="UNIFIED", coin="USDT")

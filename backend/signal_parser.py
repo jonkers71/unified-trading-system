@@ -15,10 +15,10 @@ class SignalParser:
         self.patterns = {
             # Symbol: specific knowns first, then generic letters. 
             # Restricted generic [A-Z]{3,} to NOT match common noise words like "SIGNAL", "ALERT"
-            'symbol': r'(XAUUSD|BTCUSDT|ETHUSDT|BCHUSDT|XRPUSDT|SOLUSDT|DOGEUSDT|GOLD|[A-Z]{3,}/?[A-Z]{3,})',
+            'symbol': r'(XAUUSD|BTCUSDT|ETHUSDT|BCHUSDT|XRPUSDT|SOLUSDT|DOGEUSDT|GOLD|\d*[A-Z]{3,}/?[A-Z]{3,})',
             'type': r'(BUY|SELL|LONG|SHORT)',
             # Entry: supports "ENTRY:", "PRICE:", "AT", "@", "Enter below:", "Enter at:"
-            'price': r'(?:ENTRY|PRICE|ENTER\s*(?:BELOW|AT|AROUND)?|AT|@)\s*:?\s*(\d+\.?\d*)',
+            'price': r'(?:ENTRY\s*(?:ZONE|PRICE)?|PRICE|ENTER\s*(?:BELOW|AT|AROUND)?|AT|@)\s*:?\s*(\d+\.?\d*)',
             # SL: handles optional emojis like 🔴, 🚫, ❌, 🛑
             'sl': r'(?:🔴|🚫|❌|🛑|STOPLOSS|STOP\s*LOSS|SL)\s*:?\s*(\d+\.?\d*)',
             # TP: handles "TP1: 1234.5", "💰TP1 1234.5", "🤑TP1: 1234.5" formats
