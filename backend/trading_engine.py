@@ -413,6 +413,80 @@ class TradingEngine:
             if not tp1_reached:
                 continue # Do not move Stop Loss until TP1 is hit
 
+            # === PROGRESSIVE MODE: Partial Close Logic ===
+            if signal_data.get('progressive'):
+                splits = self.config['trading'].get('tp_split', [33, 33, 34])
+                original_vol = signal_data.get('original_volume', pos.volume)
+                min_vol = info.volume_min
+                
+                # TP1 reached: Close first partial if not already done
+                if not signal_data.get('tp1_closed', False):
+                    close_vol = max(min_vol, round(original_vol * (splits[0] / 100), 2))
+                    close_vol = min(close_vol, pos.volume)  # Don't close more than remaining
+                    
+                    close_side = mt5.ORDER_TYPE_SELL if pos.type == mt5.POSITION_TYPE_BUY else mt5.ORDER_TYPE_BUY
+                    close_price = tick.bid if pos.type == mt5.POSITION_TYPE_BUY else tick.ask
+                    
+                    close_req = {
+                        "action": mt5.TRADE_ACTION_DEAL,
+                        "symbol": symbol,
+                        "volume": close_vol,
+                        "type": close_side,
+                        "price": close_price,
+                        "position": pos.ticket,
+                        "magic": self.config['mt5']['magic_number'],
+                        "comment": "Progressive: TP1 partial",
+                        "type_time": mt5.ORDER_TIME_GTC,
+                        "type_filling": mt5.ORDER_FILLING_IOC,
+                    }
+                    result = mt5.order_send(close_req)
+                    if result and result.retcode == mt5.TRADE_RETCODE_DONE:
+                        self.logger.info(f"✅ Progressive TP1: Closed {close_vol} of {symbol} ({splits[0]}%)")
+                        signal_data['tp1_closed'] = True
+                        self._save_state()
+                    else:
+                        self.logger.error(f"❌ Progressive TP1 partial close failed for {symbol}: {result.comment if result else 'No result'}")
+                
+                # TP2 reached: Close second partial if not already done
+                if len(signal_data.get('tps', [])) >= 2 and not signal_data.get('tp2_closed', False):
+                    tp2 = signal_data['tps'][1]
+                    tp2_reached = False
+                    if pos.type == mt5.POSITION_TYPE_BUY:
+                        if tick.bid >= tp2: tp2_reached = True
+                    else:
+                        if tick.ask <= tp2: tp2_reached = True
+                    
+                    if tp2_reached:
+                        # Refresh position to get updated volume after TP1 close
+                        refreshed = mt5.positions_get(ticket=pos.ticket)
+                        if refreshed:
+                            current_vol = refreshed[0].volume
+                            close_vol = max(min_vol, round(original_vol * (splits[1] / 100), 2))
+                            close_vol = min(close_vol, current_vol)
+                            
+                            close_side = mt5.ORDER_TYPE_SELL if pos.type == mt5.POSITION_TYPE_BUY else mt5.ORDER_TYPE_BUY
+                            close_price = tick.bid if pos.type == mt5.POSITION_TYPE_BUY else tick.ask
+                            
+                            close_req = {
+                                "action": mt5.TRADE_ACTION_DEAL,
+                                "symbol": symbol,
+                                "volume": close_vol,
+                                "type": close_side,
+                                "price": close_price,
+                                "position": pos.ticket,
+                                "magic": self.config['mt5']['magic_number'],
+                                "comment": "Progressive: TP2 partial",
+                                "type_time": mt5.ORDER_TIME_GTC,
+                                "type_filling": mt5.ORDER_FILLING_IOC,
+                            }
+                            result = mt5.order_send(close_req)
+                            if result and result.retcode == mt5.TRADE_RETCODE_DONE:
+                                self.logger.info(f"✅ Progressive TP2: Closed {close_vol} of {symbol} ({splits[1]}%)")
+                                signal_data['tp2_closed'] = True
+                                self._save_state()
+                            else:
+                                self.logger.error(f"❌ Progressive TP2 partial close failed for {symbol}: {result.comment if result else 'No result'}")
+
             # 1. Breakeven Logic (Move SL to Entry + Buffer)
             if be_enabled and pos.sl < pos.price_open:
                 new_sl = pos.price_open + (be_buffer_pips * point) if pos.type == mt5.POSITION_TYPE_BUY else pos.price_open - (be_buffer_pips * point)
@@ -753,6 +827,8 @@ class TradingEngine:
                 await self._execute_mt5_split(signal)
             elif tp_mode == 'hybrid':
                 await self._execute_mt5_hybrid(signal)
+            elif tp_mode == 'progressive':
+                await self._execute_mt5_progressive(signal)
             elif tp_mode == 'scalper':
                 await self._execute_mt5_scalper(signal)
             else: # Sniper
@@ -911,6 +987,60 @@ class TradingEngine:
         }
         
         result = mt5.order_send(request)
+        self._log_trade(result, symbol, lot, signal)
+
+    async def _execute_mt5_progressive(self, signal):
+        """Execute 1 position with progressive partial closes at each TP level"""
+        raw_symbol = signal['symbol']
+        symbol = self._resolve_mt5_symbol(raw_symbol)
+        if not symbol:
+            self._log_failed_trade(raw_symbol, signal, "Symbol not found in MT5")
+            return
+            
+        side = mt5.ORDER_TYPE_BUY if signal['side'] == 'BUY' else mt5.ORDER_TYPE_SELL
+        
+        info = mt5.symbol_info(symbol)
+        
+        # Try to get tick with small retries
+        tick = None
+        for _ in range(5):
+            tick = mt5.symbol_info_tick(symbol)
+            if tick: break
+            await asyncio.sleep(0.1)
+            
+        if not tick:
+            self._log_failed_trade(symbol, signal, "Could not get tick data (timeout)")
+            return
+            
+        balance = mt5.account_info().balance
+        lot = self.risk_manager.calculate_mt5_lot(info, signal['entry'], signal['sl'], balance)
+        
+        # Set TP to the last available TP (TP3 ideally, or whatever the last one is)
+        final_tp_idx = min(2, len(signal['tps']) - 1)
+        
+        request = {
+            "action": mt5.TRADE_ACTION_DEAL,
+            "symbol": symbol,
+            "volume": lot,
+            "type": side,
+            "price": tick.ask if side == mt5.ORDER_TYPE_BUY else tick.bid,
+            "sl": signal['sl'],
+            "tp": signal['tps'][final_tp_idx],
+            "magic": self.config['mt5']['magic_number'],
+            "comment": f"Progressive: {signal['channel_name']}",
+            "type_time": mt5.ORDER_TIME_GTC,
+            "type_filling": mt5.ORDER_FILLING_IOC,
+        }
+        
+        result = mt5.order_send(request)
+        
+        if result.retcode == mt5.TRADE_RETCODE_DONE:
+            # Mark signal for progressive partial close tracking
+            signal['progressive'] = True
+            signal['tp1_closed'] = False
+            signal['tp2_closed'] = False
+            signal['original_volume'] = lot
+        
         self._log_trade(result, symbol, lot, signal)
 
     def _log_trade(self, result, symbol, lot, signal):
