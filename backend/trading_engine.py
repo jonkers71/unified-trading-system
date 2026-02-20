@@ -1107,7 +1107,8 @@ class TradingEngine:
             order_resp = self.bybit_session.place_order(
                 category="linear", symbol=symbol, side=side, orderType="Market",
                 qty=str(qty), takeProfit=str(signal['tps'][0]), stopLoss=str(signal['sl']),
-                tpOrderType="Market", slOrderType="Market", positionIdx=0
+                tpOrderType="Market", slOrderType="Market", positionIdx=0,
+                tpslMode="Full"
             )
             
             if order_resp['retCode'] == 0:
@@ -1131,7 +1132,7 @@ class TradingEngine:
             self.logger.error(f"❌ {msg}")
             self.trade_history.append({
                 "time": time.strftime("%H:%M:%S"), "symbol": symbol, "type": signal['side'],
-                "target": "--", "status": f"Bybit: {e.ret_code}", "success": False
+                "target": "--", "status": f"Bybit: {ret_code}", "success": False
             })
             self._save_state()
         except FailedRequestError as e:
