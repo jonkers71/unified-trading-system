@@ -66,12 +66,23 @@ class RiskManager:
         # Round down to qty_step precision
         qty = math.floor(qty / qty_step) * qty_step
         
-        # Clamp to minimum allowed quantity
-        if qty < min_qty:
-            self.logger.info(f"Rounding up qty {qty} to minOrderQty {min_qty} for {symbol_rules.get('symbol')}")
-            qty = min_qty
+        # Calculate true exchange minimum considering notional value
+        min_notional = float(lot_filter.get('minNotionalValue', 5.0)) # 5 USDT default for linear
+        min_qty_for_notional = min_notional / entry
+        
+        # True minimum is the larger of the contract minimum and the notional minimum
+        true_min_qty = max(min_qty, min_qty_for_notional)
+        
+        # Round up the true minimum to match step precision
+        true_min_qty = math.ceil(true_min_qty / qty_step) * qty_step
+        
+        # Clamp calculated qty to this safe exchange minimum
+        if qty < true_min_qty:
+            self.logger.info(f"Rounding up qty {qty} to meet exchange minNotional/minQty limit {true_min_qty:.4f} for {symbol_rules.get('symbol')}")
+            qty = true_min_qty
             
-        return qty
+        # Final round to avoid floating point artifacts
+        return round(qty, 8)
 
     def validate_trade(self, signal, current_positions):
         """
