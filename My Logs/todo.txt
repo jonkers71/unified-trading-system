@@ -1,0 +1,65 @@
+The Core Problem: Minimum Order Value
+The log file shows the exact error for both FILUSDT and DOTUSDT trades:
+Plain Text
+ERROR - ❌ Bybit API Error [UNKNOWN]: Order does not meet minimum order value 5USDT
+This means that even though the trade is being sent, the final calculated order size is below Bybit's required minimum of 5 USDT in notional value. My analysis of your code and the logs points to two specific reasons for this.
+Action Plan: What to Change
+1. Fix the place_order Error Handling
+The Issue:
+In backend/trading_engine.py, your error handling for place_order is almost perfect, but it misses one crucial detail. When the "minimum order value" error occurs, the order_resp["retCode"] is not 0, so the code falls through the if block and never enters the except InvalidRequestError block where the detailed error message is. Instead, it just finishes the try block without logging the actual error message from Bybit, resulting in the [UNKNOWN] code in your log.
+What to Change:
+Inside the _execute_bybit function, you need to check the retCode from the order_resp and, if it's not 0, raise an exception or log the error directly. This will make your logging far more precise.
+File: backend/trading_engine.py
+Lines to Change: Around 1114
+Suggested Logic:
+Python
+# ... inside _execute_bybit method
+order_resp = self.bybit_session.place_order(...)
+
+# --> ADD THIS CHECK <--
+if order_resp.get("retCode") != 0:
+    # Log the actual error message from Bybit
+    self.logger.error(f"❌ Bybit Order Failed [{order_resp.get('retCode')}]: {order_resp.get('retMsg')}")
+    # Log to trade history
+    self.trade_history.append({
+        # ... (add failure details here)
+    })
+    return # Stop further execution
+
+# Your existing success logic
+self.logger.info(f"✅ Bybit Success: {symbol} {qty}")
+# ... (rest of the success logic)
+2. Correct the Risk Manager's Quantity Calculation
+The Issue:
+This is the root cause of the error. In backend/risk_manager.py, the calculate_bybit_qty function correctly identifies that the risk-calculated quantity is too small. It then logs Rounding up qty... and correctly calculates the true_min_qty needed to meet the 5 USDT notional value. However, it fails to add a small buffer to this minimum quantity. Due to floating-point math inaccuracies and potential price movements between calculation and execution, the final order value can end up being something like 4.99999999 USDT, which Bybit rejects.
+What to Change:
+In the calculate_bybit_qty function, after you calculate true_min_qty, you should add a small percentage buffer (e.g., 1.5%) to it before setting it as the final quantity. This ensures the order value will safely exceed the 5 USDT minimum.
+File: backend/risk_manager.py
+Lines to Change: Around line 82
+Suggested Logic:
+Python
+# ... inside calculate_bybit_qty method
+if qty < true_min_qty:
+    self.logger.info(f"Rounding up qty {qty} to meet exchange minNotional/minQty limit {true_min_qty:.4f} for {symbol_rules.get('symbol')}")
+    
+    # --> ADD A BUFFER TO THE MINIMUM QUANTITY <--
+    # Add a 1% buffer to safely clear the minimum notional value
+    qty = true_min_qty * 1.01 
+
+# Final round to avoid floating point artifacts
+return round(qty, 8)
+3. (Optional but Recommended) Reduce Latency Monitor Noise
+The Issue:
+Your log file is filled with GET /v5/user/query-api calls every 10 seconds. This is from your _latency_monitor_loop. While this works, it creates a lot of noise in the logs and consumes API rate limit quota unnecessarily. You have already implemented a much better startup validation check (_validate_bybit_auth), so this aggressive latency check is redundant.
+What to Change:
+I recommend increasing the sleep time in the _latency_monitor_loop from 10 seconds to a much larger value, like 300 seconds. The primary purpose of your auth validation is now handled at startup, so this loop can be less frequent.
+File: backend/trading_engine.py
+Line to Change: Around 354
+Suggested Logic:
+Python
+# ... inside _latency_monitor_loop
+            except Exception as e:
+                self.logger.warning(f"Latency check error: {e}")
+            
+            # --> INCREASE THE SLEEP TIME <--
+            await asyncio.sleep(60) # Changed from 10 to 60 seconds

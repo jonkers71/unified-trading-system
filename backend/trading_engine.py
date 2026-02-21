@@ -351,7 +351,7 @@ class TradingEngine:
                              self.bybit_status = "INVALID KEYS"
             except Exception as e:
                 self.logger.warning(f"Latency check error: {e}")
-            await asyncio.sleep(10)
+            await asyncio.sleep(300)
 
     async def _protection_monitor_loop(self):
         """Background task for Breakeven and Trailing Stop management"""
@@ -1111,6 +1111,15 @@ class TradingEngine:
                 tpslMode="Full"
             )
             
+            if order_resp.get('retCode', 1) != 0:
+                self.logger.error(f"❌ Bybit Order Failed [{order_resp.get('retCode')}]: {order_resp.get('retMsg')}")
+                self.trade_history.append({
+                    "time": time.strftime("%H:%M:%S"), "symbol": symbol, "type": signal['side'],
+                    "target": "--", "status": f"Bybit: {order_resp.get('retCode')}", "success": False
+                })
+                self._save_state()
+                return
+
             if order_resp['retCode'] == 0:
                 self.logger.info(f"✅ Bybit Success: {symbol} {qty}")
                 self.trade_history.append({
