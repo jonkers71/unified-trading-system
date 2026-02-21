@@ -80,7 +80,8 @@ class RiskManager:
         if qty < true_min_qty:
             self.logger.info(f"Rounding up qty {qty} to meet exchange minNotional/minQty limit {true_min_qty:.4f} for {symbol_rules.get('symbol')}")
             # Add a 1.5% buffer to safely clear the minimum notional value
-            qty = true_min_qty * 1.015
+            padded_qty = true_min_qty * 1.015
+            qty = math.ceil(padded_qty / qty_step) * qty_step
             
         # Final round to avoid floating point artifacts
         return round(qty, 8)

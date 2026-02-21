@@ -47,7 +47,6 @@ class TradingEngine:
         # Persistence
         os.makedirs("config", exist_ok=True)
         self.db_path = "config/trading_data.db"
-        self._init_db()
 
     def _init_db(self):
         try:
@@ -157,9 +156,13 @@ class TradingEngine:
                 self.logger.error(f"State broadcast failed: {e}")
 
     def _load_state(self):
-        """Load state from SQLite on startup"""
-        if not os.path.exists(self.db_path):
-            # Try to migrate from old state.json if it exists
+        """Load state from SQLite, migrating from JSON if necessary."""
+        
+        # 1. Check if the new database already exists.
+        db_exists = os.path.exists(self.db_path)
+        
+        # 2. If DB does NOT exist, check for the old state.json to migrate.
+        if not db_exists:
             old_state_file = "logs/state.json"
             if os.path.exists(old_state_file):
                 try:
@@ -169,11 +172,20 @@ class TradingEngine:
                         self.active_signals = state.get("active_signals", {})
                         self.daily_profit = state.get("daily_profit", 0.0)
                         self.trade_history = state.get("trade_history", [])
-                    self._save_state() # Save migrated data to new DB immediately
+                    
+                    # Now that data is in memory, create the DB and save it.
+                    self._init_db() # Creates the empty DB file and tables.
+                    self._save_state() # Saves the migrated data into the new DB.
+                    self.logger.info("✅ Migration successful.")
+                    return # End the function here, as state is now loaded.
                 except Exception as e:
                     self.logger.error(f"Failed to migrate old state: {e}")
-            return
-            
+
+        # 3. If we reach this point, either the DB existed or migration was not needed.
+        # We must ensure the DB and tables are created before trying to read.
+        self._init_db()
+        
+        # 4. Now, proceed to load from SQLite as normal.
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
@@ -266,7 +278,7 @@ class TradingEngine:
                     sym = p['symbol']
                     found = False
                     for sig_id, sig in self.active_signals.items():
-                        if sig.get('symbol') == sym and getattr(sig, 'ticket', None) != 'closed': 
+                        if sig.get('symbol') == sym and sig.get('ticket') != 'closed': 
                             found = True
                             break
                     
@@ -612,7 +624,9 @@ class TradingEngine:
                                 self.logger.error(f"❌ Progressive TP2 partial close failed for {symbol}: {result.comment if result else 'No result'}")
 
             # 1. Breakeven Logic (Move SL to Entry + Buffer)
-            if be_enabled and pos.sl < pos.price_open:
+            is_buy = pos.type == mt5.POSITION_TYPE_BUY
+            sl_needs_move = (is_buy and pos.sl < pos.price_open) or (not is_buy and pos.sl > pos.price_open)
+            if be_enabled and sl_needs_move:
                 new_sl = pos.price_open + (be_buffer_pips * point) if pos.type == mt5.POSITION_TYPE_BUY else pos.price_open - (be_buffer_pips * point)
                 self._modify_sl(pos, new_sl, info)
             
@@ -1136,14 +1150,26 @@ class TradingEngine:
                 qty_step = float(rules['lotSizeFilter']['qtyStep'])
                 min_qty = float(rules['lotSizeFilter']['minOrderQty'])
                 
+                accumulated_qty = 0.0
+                num_tps_to_set = min(len(signal['tps']), len(splits))
+                
                 for i, tp_price in enumerate(signal['tps']):
                     if i >= len(splits): break
                     
-                    raw_chunk = qty * (splits[i] / 100.0)
-                    chunk_size = math.floor(raw_chunk / qty_step) * qty_step
+                    if i == num_tps_to_set - 1:
+                        # Last chunk: use the remainder of the total quantity 
+                        # to ensure the sum of TP sizes equals the total position size perfectly
+                        chunk_size = qty - accumulated_qty
+                        # Final floor per precision step to avoid floating point overshoot
+                        chunk_size = math.floor(chunk_size / qty_step) * qty_step
+                    else:
+                        raw_chunk = qty * (splits[i] / 100.0)
+                        chunk_size = math.floor(raw_chunk / qty_step) * qty_step
+                        
                     chunk_size = max(min_qty, chunk_size)
                     
                     if chunk_size > 0:
+                        accumulated_qty += chunk_size
                         try:
                             self.bybit_session.set_trading_stop(
                                 category="linear",

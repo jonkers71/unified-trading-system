@@ -72,9 +72,10 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Unified Trading System API", lifespan=lifespan)
 
 # Add CORS Middleware
+# Only allow frontend domains, adjust list as needed for hosted environments.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # Configure to specific origins for production
+    allow_origins=["http://localhost", "http://127.0.0.1", "https://localhost"], 
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -86,10 +87,11 @@ api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 async def verify_api_key(api_key: str = Security(api_key_header)):
     if engine and 'system' in engine.config:
         expected_key = engine.config['system'].get('api_key')
-        if expected_key and api_key != expected_key:
-            raise HTTPException(
-                status_code=HTTP_403_FORBIDDEN, detail="Invalid API Key"
-            )
+        if expected_key:
+            if not api_key or api_key != expected_key:
+                raise HTTPException(
+                    status_code=HTTP_403_FORBIDDEN, detail="Invalid API Key"
+                )
     return api_key
 
 class ConnectionManager:
