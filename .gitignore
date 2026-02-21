@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+.env
+
+# Logs
+logs/
+*.log
+
+# Sensitive Data
+config/settings.yaml
+
+# IDE
+.vscode/
+.idea/
+
+# Custom Exclusions
+My Logs/
+unified_trader_session.session
