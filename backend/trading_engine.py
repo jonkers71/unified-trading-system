@@ -33,6 +33,7 @@ class TradingEngine:
         
         # Advanced State Tracking
         self.active_signals = {} # map signal_id -> status
+        self._recent_signals = {} # map: "SYMBOL_SIDE" -> timestamp
         self.monitored_channels = config.get('channels', [])
         
         # Performance Stats
@@ -717,6 +718,21 @@ class TradingEngine:
             return
             
         self.logger.info(f"✅ Parsed: {signal['side']} {signal['symbol']} Entry:{signal.get('entry')} SL:{signal.get('sl')} TPs:{signal.get('tps')}")
+        
+        # --- Deduplication Check ---
+        dedup_key = f"{signal['symbol']}_{signal['side']}"
+        now = time.time()
+        last_seen = self._recent_signals.get(dedup_key, 0)
+        
+        if now - last_seen < 10:  # 10-second dedup window
+            self.logger.warning(f"⚠️ Duplicate signal ignored: {dedup_key} (seen {now - last_seen:.1f}s ago)")
+            return
+            
+        self._recent_signals[dedup_key] = now
+        
+        # Cleanup old entries (>60s) to prevent memory leak over uptime
+        cutoff = now - 60
+        self._recent_signals = {k: v for k, v in self._recent_signals.items() if v > cutoff}
         
         if signal.get('action'):
             self.logger.info(f"🔄 Update signal detected: {signal['action']}")
