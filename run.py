@@ -1,5 +1,23 @@
 import sys
+import os
+import shutil
+
 sys.dont_write_bytecode = True
+
+# Aggressive startup cleanup for corrupted pycache files on remote machines
+def clear_pycache():
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    for root, dirs, files in os.walk(base_dir):
+        if '__pycache__' in dirs:
+            pycache_path = os.path.join(root, '__pycache__')
+            try:
+                shutil.rmtree(pycache_path)
+                print(f"Cleared cache: {pycache_path}")
+            except Exception as e:
+                print(f"Failed to clear {pycache_path}: {e}")
+
+# Run cleanup BEFORE importing any local modules
+clear_pycache()
 
 import logging
 import yaml
