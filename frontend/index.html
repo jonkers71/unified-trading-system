@@ -800,6 +800,18 @@
                         </select>
                     </div>
                 </div>
+
+                <!-- Security -->
+                <div class="card">
+                    <div class="card-header">
+                        <h3>Security</h3>
+                    </div>
+                    <div class="setting-field">
+                        <label>System API Key (X-API-Key)</label>
+                        <div class="setting-desc">Required for configuration and trade commands</div>
+                        <input type="password" id="api-key" placeholder="Enter API Key...">
+                    </div>
+                </div>
             </div>
         </div>
     </main>
@@ -819,6 +831,19 @@
                     event.currentTarget.classList.add('active');
                 }
             }
+        }
+
+        function getAuthHeaders() {
+            const keyInput = document.getElementById('api-key');
+            let key = '';
+            if (keyInput) {
+                key = keyInput.value || localStorage.getItem('uts_api_key') || '';
+                if (key) localStorage.setItem('uts_api_key', key);
+            }
+            return {
+                'Content-Type': 'application/json',
+                'X-API-Key': key
+            };
         }
 
         async function saveSettings() {
@@ -843,14 +868,17 @@
                 // Save trading settings
                 const res = await fetch('/settings/update', {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: getAuthHeaders(),
                     body: JSON.stringify(data)
                 });
                 const result = await res.json();
 
                 // Also update log level separately
                 const logLevel = document.getElementById('log-level').value;
-                await fetch(`/logs/level/${logLevel}`, { method: 'POST' });
+                await fetch(`/logs/level/${logLevel}`, {
+                    method: 'POST',
+                    headers: getAuthHeaders()
+                });
 
                 if (result.status === 'success') {
                     alert("PROTOCOL UPLOAD SUCCESSFUL: " + result.message);
@@ -864,9 +892,11 @@
 
         async function toggleSoftStop() {
             try {
-                const res = await fetch('/engine/toggle-trades', { method: 'POST' });
+                const res = await fetch('/engine/toggle-trades', {
+                    method: 'POST',
+                    headers: getAuthHeaders()
+                });
                 const data = await res.json();
-                fetchStatus();
                 alert(data.message);
             } catch (e) {
                 alert("TOGGLE ERROR: " + e);
@@ -883,7 +913,7 @@
             try {
                 const res = await fetch('/engine/inject-signal', {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: getAuthHeaders(),
                     body: JSON.stringify({ text: text, asset_type: type })
                 });
                 const result = await res.json();
@@ -951,10 +981,8 @@
             });
         }
 
-        async function fetchStatus() {
+        function updateUIWithState(data) {
             try {
-                const res = await fetch('/status');
-                const data = await res.json();
 
                 // Soft Stop Button Update
                 const ssBtn = document.getElementById('btn-soft-stop');
@@ -1000,6 +1028,13 @@
                 const profitEl = document.getElementById('daily-profit');
                 profitEl.innerText = (data.daily_profit >= 0 ? '+' : '-') + '$' + Math.abs(data.daily_profit).toFixed(2);
                 profitEl.style.color = data.daily_profit >= 0 ? 'var(--success)' : 'var(--error)';
+
+                // Restore API Key
+                const apiKeyInput = document.getElementById('api-key');
+                if (apiKeyInput && !apiKeyInput.value) {
+                    const savedKey = localStorage.getItem('uts_api_key');
+                    if (savedKey) apiKeyInput.value = savedKey;
+                }
 
                 // Settings Auto-Populate (One time or when moving to tab)
                 if (data.settings && !window.settingsLoaded) {
@@ -1127,9 +1162,33 @@
             }
         }
 
+        function connectWebSocket() {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${protocol}//${window.location.host}/ws/status`;
+            const ws = new WebSocket(wsUrl);
+
+            ws.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    updateUIWithState(data);
+                } catch (e) {
+                    console.error("Failed to parse WS data", e);
+                }
+            };
+
+            ws.onclose = () => {
+                console.warn("WebSocket disconnected. Reconnecting in 3s...");
+                setTimeout(connectWebSocket, 3000);
+            };
+
+            ws.onerror = (err) => {
+                console.error("WebSocket error:", err);
+                ws.close();
+            };
+        }
+
         initCharts();
-        setInterval(fetchStatus, 3000);
-        fetchStatus();
+        connectWebSocket();
     </script>
 </body>
 

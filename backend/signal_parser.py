@@ -44,6 +44,12 @@ class SignalParser:
             self.logger.debug(f"Message ignored as noise (no Side or Action found)")
             return None
 
+        # Guard: Filter out purely informational or analytical messages
+        negative_keywords = ["ANALYSIS", "RECAP", "RESULTS", "VIP PERFORMANCE", "SUMMARY", "FREE REPORT"]
+        if any(nk in text for nk in negative_keywords) and not has_update:
+            self.logger.debug(f"Message ignored as noise (Negative Keyword match)")
+            return None
+
         # 1. Extract Symbol
         symbol_match = re.search(self.patterns['symbol'], text)
         if not symbol_match:
@@ -85,6 +91,12 @@ class SignalParser:
                 inline_match = re.search(inline_pattern, text)
                 if inline_match:
                     entry = inline_match.group(1)
+                else:
+                    # Case 3: SYMBOL followed by a price (e.g. "XAUUSD 2050.00")
+                    fallback_pattern = r'(?:' + re.escape(symbol) + r')\s*(?:-\s*)?(\d+\.\d{2,})'
+                    fb_match = re.search(fallback_pattern, text)
+                    if fb_match:
+                        entry = fb_match.group(1)
 
         # 4. Extract SL
         sl = self._extract_value(text, self.patterns['sl'])

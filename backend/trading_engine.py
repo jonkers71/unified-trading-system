@@ -4,6 +4,7 @@ import logging
 import time
 import json
 import os
+import sqlite3
 from datetime import datetime, timedelta
 from pybit.unified_trading import HTTP
 from pybit.exceptions import InvalidRequestError, FailedRequestError
@@ -12,8 +13,9 @@ from .signal_parser import SignalParser
 from .risk_manager import RiskManager
 
 class TradingEngine:
-    def __init__(self, config):
+    def __init__(self, config, on_state_change=None):
         self.config = config
+        self.on_state_change = on_state_change
         self.logger = logging.getLogger("TradingEngine")
         self.parser = SignalParser()
         self.risk_manager = RiskManager(config)
@@ -43,8 +45,29 @@ class TradingEngine:
         self.new_trades_enabled = True
         
         # Persistence
-        self.state_file = "logs/state.json"
-        os.makedirs("logs", exist_ok=True)
+        os.makedirs("config", exist_ok=True)
+        self.db_path = "config/trading_data.db"
+        self._init_db()
+
+    def _init_db(self):
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS active_signals (
+                        signal_id TEXT PRIMARY KEY,
+                        data TEXT
+                    )
+                ''')
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS app_state (
+                        key TEXT PRIMARY KEY,
+                        value TEXT
+                    )
+                ''')
+                conn.commit()
+        except Exception as e:
+            self.logger.error(f"Failed to init DB: {e}")
 
     async def start(self):
         """Initialize all connections"""
@@ -73,8 +96,10 @@ class TradingEngine:
         await self._reconcile_positions()
         
         # 4. Telegram Initialize
+        os.makedirs("config", exist_ok=True)
+        self.session_path = os.path.join("config", self.config['telegram']['session_name'])
         self.client = TelegramClient(
-            self.config['telegram']['session_name'],
+            self.session_path,
             self.config['telegram']['api_id'],
             self.config['telegram']['api_hash']
         )
@@ -95,32 +120,80 @@ class TradingEngine:
         await self.client.run_until_disconnected()
 
     def _save_state(self):
-        """Save active signals and state to disk"""
+        """Save active signals and state to SQLite"""
         try:
-            state = {
-                "active_signals": self.active_signals,
-                "daily_profit": self.daily_profit,
-                "trade_history": self.trade_history[-50:] # Keep last 50 for dashboard resume
-            }
-            with open(self.state_file, "w") as f:
-                json.dump(state, f, indent=4)
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                
+                # Sync active signals safely via DELETE/INSERT
+                cursor.execute("DELETE FROM active_signals")
+                for sig_id, sig_data in self.active_signals.items():
+                    cursor.execute(
+                        "INSERT INTO active_signals (signal_id, data) VALUES (?, ?)",
+                        (sig_id, json.dumps(sig_data))
+                    )
+                
+                # Sync app state
+                history_json = json.dumps(self.trade_history[-50:])
+                cursor.execute(
+                    "INSERT OR REPLACE INTO app_state (key, value) VALUES (?, ?)",
+                    ("trade_history", history_json)
+                )
+                cursor.execute(
+                    "INSERT OR REPLACE INTO app_state (key, value) VALUES (?, ?)",
+                    ("daily_profit", json.dumps(self.daily_profit))
+                )
+                conn.commit()
+            
+            self._notify_state_change()
         except Exception as e:
-            self.logger.error(f"Failed to save state: {e}")
+            self.logger.error(f"Failed to save state to DB: {e}")
+
+    def _notify_state_change(self):
+        if self.on_state_change:
+            try:
+                self.on_state_change()
+            except Exception as e:
+                self.logger.error(f"State broadcast failed: {e}")
 
     def _load_state(self):
-        """Load state from disk on startup"""
-        if not os.path.exists(self.state_file):
+        """Load state from SQLite on startup"""
+        if not os.path.exists(self.db_path):
+            # Try to migrate from old state.json if it exists
+            old_state_file = "logs/state.json"
+            if os.path.exists(old_state_file):
+                try:
+                    self.logger.info("Migrating old state.json to SQLite...")
+                    with open(old_state_file, "r") as f:
+                        state = json.load(f)
+                        self.active_signals = state.get("active_signals", {})
+                        self.daily_profit = state.get("daily_profit", 0.0)
+                        self.trade_history = state.get("trade_history", [])
+                    self._save_state() # Save migrated data to new DB immediately
+                except Exception as e:
+                    self.logger.error(f"Failed to migrate old state: {e}")
             return
             
         try:
-            with open(self.state_file, "r") as f:
-                state = json.load(f)
-                self.active_signals = state.get("active_signals", {})
-                self.daily_profit = state.get("daily_profit", 0.0)
-                self.trade_history = state.get("trade_history", [])
-                self.logger.info(f"📂 State Loaded: {len(self.active_signals)} active signals restored.")
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                
+                # Load active signals
+                cursor.execute("SELECT signal_id, data FROM active_signals")
+                for row in cursor.fetchall():
+                    self.active_signals[row[0]] = json.loads(row[1])
+                    
+                # Load app state
+                cursor.execute("SELECT key, value FROM app_state")
+                state_rows = cursor.fetchall()
+                state_dict = {row[0]: json.loads(row[1]) for row in state_rows}
+                
+                self.daily_profit = state_dict.get("daily_profit", 0.0)
+                self.trade_history = state_dict.get("trade_history", [])
+                
+                self.logger.info(f"📂 State Loaded: {len(self.active_signals)} active signals restored from SQLite.")
         except Exception as e:
-            self.logger.error(f"Failed to load state: {e}")
+            self.logger.error(f"Failed to load state from DB: {e}")
 
     async def _reconcile_positions(self):
         """Verify internal state against actual broker positions"""
@@ -179,12 +252,63 @@ class TradingEngine:
                 for rid in to_remove:
                     del self.active_signals[rid]
         
-        # 2. Bybit Reconciliation (Basic - just log for now)
+        # 2. Bybit Reconciliation (Advanced)
         if self.config['bybit']['enabled'] and self.bybit_session:
             try:
                 pos_resp = self.bybit_session.get_positions(category="linear", settleCoin="USDT")
                 bybit_positions = [p for p in pos_resp.get('result', {}).get('list', []) if float(p.get('size', 0)) > 0]
                 self.logger.info(f"📡 Bybit: Found {len(bybit_positions)} active positions.")
+                
+                active_bybit_symbols = {p['symbol'] for p in bybit_positions}
+                
+                # Check for orphans
+                for p in bybit_positions:
+                    sym = p['symbol']
+                    found = False
+                    for sig_id, sig in self.active_signals.items():
+                        if sig.get('symbol') == sym and getattr(sig, 'ticket', None) != 'closed': 
+                            found = True
+                            break
+                    
+                    if not found:
+                        self.logger.info(f"🔗 Linking orphan Bybit position: {sym}")
+                        new_sig_id = f"RESTORED_BYBIT_{sym}_{int(time.time())}"
+                        sl_val = float(p.get('stopLoss', 0))
+                        tp_val = float(p.get('takeProfit', 0))
+                        
+                        self.active_signals[new_sig_id] = {
+                            "symbol": sym,
+                            "side": str(p.get('side', 'BUY')).upper(),
+                            "entry": float(p.get('avgPrice', 0)),
+                            "sl": sl_val if sl_val > 0 else 0.0,
+                            "tps": [tp_val] if tp_val > 0 else [],
+                            "ticket": f"bybit_{sym}",
+                            "restored": True,
+                            "channel_name": "Restored (Bybit)",
+                            "type": "crypto"
+                        }
+                        
+                        self.trade_history.append({
+                            "time": time.strftime("%H:%M:%S"),
+                            "symbol": sym,
+                            "type": str(p.get('side', 'BUY')).upper(),
+                            "target": "RESTORED",
+                            "status": f"Bybit: {p.get('size')}",
+                            "success": True
+                        })
+                        
+                # Cleanup (Signals in our state for Bybit but no longer active)
+                to_remove_bybit = []
+                for sig_id, sig in self.active_signals.items():
+                    # Check if crypto or implicitly Bybit via ticket
+                    if sig.get('type') == 'crypto' or str(sig.get('ticket', '')).startswith('bybit_') or str(sig.get('ticket', '')).startswith('crypto_'):
+                        if sig.get('symbol') not in active_bybit_symbols:
+                            self.logger.info(f"🧹 Removing stale Bybit signal from state: {sig['symbol']}")
+                            to_remove_bybit.append(sig_id)
+                            
+                for rid in to_remove_bybit:
+                    del self.active_signals[rid]
+                    
             except Exception as e:
                 self.logger.warning(f"Bybit reconciliation failed: {e}")
 
@@ -629,16 +753,17 @@ class TradingEngine:
         # 2. Bybit Updates
         if self.config['bybit']['enabled'] and self.bybit_session:
             # Resolve Bybit Symbol (remove suffix if needed)
-            raw_symbol = symbol.replace(self.config['trading'].get('symbol_suffix', ''), '')
+            bybit_symbol = signal['symbol'].replace(self.config['trading'].get('symbol_suffix', ''), '')
             
             if action == "MOVE_SL":
                 try:
                     self.bybit_session.set_trading_stop(
-                        category="linear", symbol=raw_symbol, stopLoss=str(val), positionIdx=0
+                        category="linear", symbol=bybit_symbol, stopLoss=str(val), 
+                        tpslMode="Full", positionIdx=0
                     )
-                    self.logger.info(f"✅ Bybit SL Updated: {raw_symbol} -> {val}")
+                    self.logger.info(f"✅ Bybit SL Updated: {bybit_symbol} -> {val}")
                     # Update local state if found
-                    rid = next((k for k, v in self.active_signals.items() if v.get('symbol') == raw_symbol), None)
+                    rid = next((k for k, v in self.active_signals.items() if v.get('symbol') == bybit_symbol), None)
                     if rid:
                         self.active_signals[rid]['sl'] = val
                         self._save_state()
@@ -651,7 +776,7 @@ class TradingEngine:
                 try:
                     # Closing by placing an opposite market order
                     # 1. Get current position to find size
-                    pos_resp = self.bybit_session.get_positions(category="linear", symbol=raw_symbol)
+                    pos_resp = self.bybit_session.get_positions(category="linear", symbol=bybit_symbol)
                     positions = pos_resp.get('result', {}).get('list', [])
                     
                     for p in positions:
@@ -660,15 +785,15 @@ class TradingEngine:
                             side = "Sell" if p['side'] == "Buy" else "Buy"
                             self.bybit_session.place_order(
                                 category="linear",
-                                symbol=raw_symbol,
+                                symbol=bybit_symbol,
                                 side=side,
                                 orderType="Market",
                                 qty=str(size),
                                 reduceOnly=True
                             )
-                            self.logger.info(f"🛑 Bybit Position Closed: {raw_symbol} ({size})")
+                            self.logger.info(f"🛑 Bybit Position Closed: {bybit_symbol} ({size})")
                             # Remove from active signals
-                            rid = next((k for k, v in self.active_signals.items() if v.get('symbol') == raw_symbol), None)
+                            rid = next((k for k, v in self.active_signals.items() if v.get('symbol') == bybit_symbol), None)
                             if rid:
                                 del self.active_signals[rid]
                                 self._save_state()
@@ -823,21 +948,12 @@ class TradingEngine:
         self.logger.info(f"⚡ Executing {signal['symbol']} in {tp_mode.upper()} mode")
         
         if signal['type'] == 'forex':
-            if tp_mode == 'split':
-                await self._execute_mt5_split(signal)
-            elif tp_mode == 'hybrid':
-                await self._execute_mt5_hybrid(signal)
-            elif tp_mode == 'progressive':
-                await self._execute_mt5_progressive(signal)
-            elif tp_mode == 'scalper':
-                await self._execute_mt5_scalper(signal)
-            else: # Sniper
-                await self._execute_mt5_sniper(signal)
+            await self._execute_mt5_trade(signal, tp_mode)
         elif signal['type'] == 'crypto':
             await self._execute_bybit(signal)
 
-    async def _execute_mt5_hybrid(self, signal):
-        """Execute 1 large position with partial close monitoring"""
+    async def _execute_mt5_trade(self, signal, mode):
+        """Unified execution logic for MT5 positions"""
         raw_symbol = signal['symbol']
         symbol = self._resolve_mt5_symbol(raw_symbol)
         if not symbol:
@@ -845,54 +961,6 @@ class TradingEngine:
             return
             
         side = mt5.ORDER_TYPE_BUY if signal['side'] == 'BUY' else mt5.ORDER_TYPE_SELL
-        
-        info = mt5.symbol_info(symbol)
-        
-        # Try to get tick with small retries (sometimes selection takes a moment)
-        tick = None
-        for _ in range(5):
-            tick = mt5.symbol_info_tick(symbol)
-            if tick: break
-            await asyncio.sleep(0.1)
-            
-        if not tick:
-            self._log_failed_trade(symbol, signal, "Could not get tick data (timeout)")
-            return
-            
-        balance = mt5.account_info().balance
-        lot = self.risk_manager.calculate_mt5_lot(info, signal['entry'], signal['sl'], balance)
-        
-        # Use simple target for initial order
-        final_tp_idx = 1 if self.config['trading'].get('final_target') == 'tp2' else 2
-        if len(signal['tps']) <= final_tp_idx: final_tp_idx = len(signal['tps']) - 1
-        
-        request = {
-            "action": mt5.TRADE_ACTION_DEAL,
-            "symbol": symbol,
-            "volume": lot,
-            "type": side,
-            "price": tick.ask if side == mt5.ORDER_TYPE_BUY else tick.bid,
-            "sl": signal['sl'],
-            "tp": signal['tps'][final_tp_idx],
-            "magic": self.config['mt5']['magic_number'],
-            "comment": f"Hybrid: {signal['channel_name']}",
-            "type_time": mt5.ORDER_TIME_GTC,
-            "type_filling": mt5.ORDER_FILLING_IOC,
-        }
-        
-        result = mt5.order_send(request)
-        self._log_trade(result, symbol, lot, signal)
-
-    async def _execute_mt5_split(self, signal):
-        """Execute 3 separate positions for each TP"""
-        raw_symbol = signal['symbol']
-        symbol = self._resolve_mt5_symbol(raw_symbol)
-        if not symbol:
-            self._log_failed_trade(raw_symbol, signal, "Symbol not found in MT5")
-            return
-            
-        side = mt5.ORDER_TYPE_BUY if signal['side'] == 'BUY' else mt5.ORDER_TYPE_SELL
-        
         info = mt5.symbol_info(symbol)
         
         # Try to get tick with small retries
@@ -909,139 +977,65 @@ class TradingEngine:
         balance = mt5.account_info().balance
         total_lot = self.risk_manager.calculate_mt5_lot(info, signal['entry'], signal['sl'], balance)
         
-        # Split lot according to config
-        splits = self.config['trading'].get('tp_split', [33, 33, 34])
-        min_v = info.volume_min
+        # Prepare execution tasks based on mode
+        orders_to_place = [] # list of (lot, tp_price, comment_suffix)
         
-        lot1 = max(min_v, round(total_lot * (splits[0]/100), 2))
-        lot2 = max(min_v, round(total_lot * (splits[1]/100), 2))
-        lot3 = round(total_lot - (lot1 + lot2), 2)
-        
-        # If total is too small for 3 positions, just use 1
-        if lot3 <= 0 or (lot1 + lot2 + lot3) > (total_lot * 1.1): # Over-risking guard
-             lots = [total_lot, 0, 0]
-        else:
-             lots = [lot1, lot2, lot3]
-        for i, tp_price in enumerate(signal['tps']):
-            if i >= 3: break
-            if lots[i] <= 0: continue
+        if mode == 'split':
+            splits = self.config['trading'].get('tp_split', [33, 33, 34])
+            min_v = info.volume_min
+            lot1 = max(min_v, round(total_lot * (splits[0]/100), 2))
+            lot2 = max(min_v, round(total_lot * (splits[1]/100), 2))
+            lot3 = round(total_lot - (lot1 + lot2), 2)
+            
+            # If total is too small for 3 positions, just use 1
+            if lot3 <= 0 or (lot1 + lot2 + lot3) > (total_lot * 1.1):
+                lots = [total_lot, 0, 0]
+            else:
+                lots = [lot1, lot2, lot3]
+                
+            for i, tp_price in enumerate(signal['tps']):
+                if i >= 3: break
+                if lots[i] > 0:
+                    orders_to_place.append((lots[i], tp_price, f"Split TP{i+1}"))
+                    
+        elif mode == 'scalper' and signal['tps']:
+            orders_to_place.append((total_lot, signal['tps'][0], "Scalper"))
+            
+        elif mode == 'progressive' and signal['tps']:
+            final_tp_idx = min(2, len(signal['tps']) - 1)
+            orders_to_place.append((total_lot, signal['tps'][final_tp_idx], "Progressive"))
+            
+        else: # sniper or hybrid
+            final_tp_idx = 1 if self.config['trading'].get('final_target') == 'tp2' else 2
+            if len(signal['tps']) <= final_tp_idx: final_tp_idx = len(signal['tps']) - 1
+            if final_tp_idx >= 0 and final_tp_idx < len(signal['tps']):
+                orders_to_place.append((total_lot, signal['tps'][final_tp_idx], mode.capitalize()))
+
+        # Execute all determined orders
+        for lot, tp_price, comment_suffix in orders_to_place:
             request = {
                 "action": mt5.TRADE_ACTION_DEAL,
                 "symbol": symbol,
-                "volume": lots[i],
+                "volume": lot,
                 "type": side,
                 "price": tick.ask if side == mt5.ORDER_TYPE_BUY else tick.bid,
                 "sl": signal['sl'],
                 "tp": tp_price,
                 "magic": self.config['mt5']['magic_number'],
-                "comment": f"Split TP{i+1}: {signal['channel_name']}",
+                "comment": f"{comment_suffix}: {signal['channel_name']}"[:31], # MT5 max comment is 31 chars
                 "type_time": mt5.ORDER_TIME_GTC,
                 "type_filling": mt5.ORDER_FILLING_IOC,
             }
+            
             result = mt5.order_send(request)
-            self._log_trade(result, symbol, lots[i], signal)
-
-    async def _execute_mt5_sniper(self, signal):
-        """Execute 1 position targeting a specific TP level"""
-        # Logic same as hybrid but no partial close monitoring
-        await self._execute_mt5_hybrid(signal)
-
-    async def _execute_mt5_scalper(self, signal):
-        """Execute 1 position targeting ONLY TP1"""
-        raw_symbol = signal['symbol']
-        symbol = self._resolve_mt5_symbol(raw_symbol)
-        if not symbol:
-            self._log_failed_trade(raw_symbol, signal, "Symbol not found in MT5")
-            return
             
-        side = mt5.ORDER_TYPE_BUY if signal['side'] == 'BUY' else mt5.ORDER_TYPE_SELL
-        
-        info = mt5.symbol_info(symbol)
-        
-        # Try to get tick with small retries
-        tick = None
-        for _ in range(5):
-            tick = mt5.symbol_info_tick(symbol)
-            if tick: break
-            await asyncio.sleep(0.1)
-            
-        if not tick:
-            self._log_failed_trade(symbol, signal, "Could not get tick data (timeout)")
-            return
-            
-        balance = mt5.account_info().balance
-        lot = self.risk_manager.calculate_mt5_lot(info, signal['entry'], signal['sl'], balance)
-        
-        request = {
-            "action": mt5.TRADE_ACTION_DEAL,
-            "symbol": symbol,
-            "volume": lot,
-            "type": side,
-            "price": tick.ask if side == mt5.ORDER_TYPE_BUY else tick.bid,
-            "sl": signal['sl'],
-            "tp": signal['tps'][0], # Only TP1
-            "magic": self.config['mt5']['magic_number'],
-            "comment": f"Scalper: {signal['channel_name']}",
-            "type_time": mt5.ORDER_TIME_GTC,
-            "type_filling": mt5.ORDER_FILLING_IOC,
-        }
-        
-        result = mt5.order_send(request)
-        self._log_trade(result, symbol, lot, signal)
-
-    async def _execute_mt5_progressive(self, signal):
-        """Execute 1 position with progressive partial closes at each TP level"""
-        raw_symbol = signal['symbol']
-        symbol = self._resolve_mt5_symbol(raw_symbol)
-        if not symbol:
-            self._log_failed_trade(raw_symbol, signal, "Symbol not found in MT5")
-            return
-            
-        side = mt5.ORDER_TYPE_BUY if signal['side'] == 'BUY' else mt5.ORDER_TYPE_SELL
-        
-        info = mt5.symbol_info(symbol)
-        
-        # Try to get tick with small retries
-        tick = None
-        for _ in range(5):
-            tick = mt5.symbol_info_tick(symbol)
-            if tick: break
-            await asyncio.sleep(0.1)
-            
-        if not tick:
-            self._log_failed_trade(symbol, signal, "Could not get tick data (timeout)")
-            return
-            
-        balance = mt5.account_info().balance
-        lot = self.risk_manager.calculate_mt5_lot(info, signal['entry'], signal['sl'], balance)
-        
-        # Set TP to the last available TP (TP3 ideally, or whatever the last one is)
-        final_tp_idx = min(2, len(signal['tps']) - 1)
-        
-        request = {
-            "action": mt5.TRADE_ACTION_DEAL,
-            "symbol": symbol,
-            "volume": lot,
-            "type": side,
-            "price": tick.ask if side == mt5.ORDER_TYPE_BUY else tick.bid,
-            "sl": signal['sl'],
-            "tp": signal['tps'][final_tp_idx],
-            "magic": self.config['mt5']['magic_number'],
-            "comment": f"Progressive: {signal['channel_name']}",
-            "type_time": mt5.ORDER_TIME_GTC,
-            "type_filling": mt5.ORDER_FILLING_IOC,
-        }
-        
-        result = mt5.order_send(request)
-        
-        if result.retcode == mt5.TRADE_RETCODE_DONE:
-            # Mark signal for progressive partial close tracking
-            signal['progressive'] = True
-            signal['tp1_closed'] = False
-            signal['tp2_closed'] = False
-            signal['original_volume'] = lot
-        
-        self._log_trade(result, symbol, lot, signal)
+            if mode == 'progressive' and result and result.retcode == mt5.TRADE_RETCODE_DONE:
+                signal['progressive'] = True
+                signal['tp1_closed'] = False
+                signal['tp2_closed'] = False
+                signal['original_volume'] = lot
+                
+            self._log_trade(result, symbol, lot, signal)
 
     def _log_trade(self, result, symbol, lot, signal):
         """Log trade result and append to history"""
@@ -1104,12 +1098,26 @@ class TradingEngine:
             rules = instrument_resp['result']['list'][0]
             qty = self.risk_manager.calculate_bybit_qty(rules, signal['entry'], signal['sl'], balance)
             
-            order_resp = self.bybit_session.place_order(
-                category="linear", symbol=symbol, side=side, orderType="Market",
-                qty=str(qty), takeProfit=str(signal['tps'][0]), stopLoss=str(signal['sl']),
-                tpOrderType="Market", slOrderType="Market", positionIdx=0,
-                tpslMode="Full"
-            )
+            tp_mode = self.config['trading'].get('tp_mode', 'hybrid')
+            initial_tpsl_mode = "Partial" if tp_mode == 'progressive' else "Full"
+            
+            order_kwargs = {
+                "category": "linear",
+                "symbol": symbol,
+                "side": side,
+                "orderType": "Market",
+                "qty": str(qty),
+                "stopLoss": str(signal['sl']),
+                "slOrderType": "Market",
+                "positionIdx": 0,
+                "tpslMode": initial_tpsl_mode
+            }
+            
+            if tp_mode != 'progressive' and signal.get('tps'):
+                order_kwargs["takeProfit"] = str(signal['tps'][0])
+                order_kwargs["tpOrderType"] = "Market"
+
+            order_resp = self.bybit_session.place_order(**order_kwargs)
             
             if order_resp.get('retCode', 1) != 0:
                 self.logger.error(f"❌ Bybit Order Failed [{order_resp.get('retCode')}]: {order_resp.get('retMsg')}")
@@ -1120,13 +1128,45 @@ class TradingEngine:
                 self._save_state()
                 return
 
-            if order_resp['retCode'] == 0:
-                self.logger.info(f"✅ Bybit Success: {symbol} {qty}")
-                self.trade_history.append({
-                    "time": time.strftime("%H:%M:%S"), "symbol": symbol, "type": signal['side'],
-                    "target": "TP1", "status": f"Bybit: {qty}", "success": True
-                })
-                self._save_state()
+            self.logger.info(f"✅ Bybit Main Order Placed: {symbol} {qty}")
+            
+            if tp_mode == 'progressive' and signal.get('tps'):
+                import math
+                splits = self.config['trading'].get('tp_split', [33, 33, 34])
+                qty_step = float(rules['lotSizeFilter']['qtyStep'])
+                min_qty = float(rules['lotSizeFilter']['minOrderQty'])
+                
+                for i, tp_price in enumerate(signal['tps']):
+                    if i >= len(splits): break
+                    
+                    raw_chunk = qty * (splits[i] / 100.0)
+                    chunk_size = math.floor(raw_chunk / qty_step) * qty_step
+                    chunk_size = max(min_qty, chunk_size)
+                    
+                    if chunk_size > 0:
+                        try:
+                            self.bybit_session.set_trading_stop(
+                                category="linear",
+                                symbol=symbol,
+                                tpslMode="Partial",
+                                takeProfit=str(tp_price),
+                                tpOrderType="Market",
+                                tpSize=str(round(chunk_size, 8)),
+                                stopLoss=str(signal['sl']),
+                                slOrderType="Market",
+                                slSize=str(round(chunk_size, 8)),
+                                positionIdx=0
+                            )
+                            self.logger.info(f"✅ Bybit Partial TP{i+1} Set: {symbol} {chunk_size} @ {tp_price}")
+                        except Exception as e:
+                            self.logger.error(f"❌ Failed to set Bybit Partial TP{i+1}: {e}")
+
+            self.trade_history.append({
+                "time": time.strftime("%H:%M:%S"), "symbol": symbol, "type": signal['side'],
+                "target": "TP1" if not signal.get('tps') else str(signal['tps'][0]), 
+                "status": f"Bybit: {qty}", "success": True
+            })
+            self._save_state()
         except InvalidRequestError as e:
             # pybit v5 exceptions might have ret_code or retCode depending on version/context
             ret_code = getattr(e, 'ret_code', getattr(e, 'retCode', 'UNKNOWN'))

@@ -24,7 +24,12 @@ import yaml
 import asyncio
 import os
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from fastapi import FastAPI, Depends, Security, HTTPException, WebSocket, WebSocketDisconnect
+from typing import List
+import json
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import APIKeyHeader
+from starlette.status import HTTP_403_FORBIDDEN
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import PlainTextResponse
 from backend.trading_engine import TradingEngine
@@ -57,7 +62,7 @@ async def lifespan(app: FastAPI):
         logging.getLogger().setLevel(getattr(logging, log_level, logging.INFO))
         logger.info(f"Log level set to: {log_level}")
         
-        engine = TradingEngine(config)
+        engine = TradingEngine(config, on_state_change=lambda: asyncio.create_task(broadcast_state()))
         asyncio.create_task(engine.start())
         yield
     except Exception as e:
@@ -65,6 +70,54 @@ async def lifespan(app: FastAPI):
         yield
 
 app = FastAPI(title="Unified Trading System API", lifespan=lifespan)
+
+# Add CORS Middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"], # Configure to specific origins for production
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Setup API Key Security
+api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+async def verify_api_key(api_key: str = Security(api_key_header)):
+    if engine and 'system' in engine.config:
+        expected_key = engine.config['system'].get('api_key')
+        if expected_key and api_key != expected_key:
+            raise HTTPException(
+                status_code=HTTP_403_FORBIDDEN, detail="Invalid API Key"
+            )
+    return api_key
+
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: List[WebSocket] = []
+
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
+
+    def disconnect(self, websocket: WebSocket):
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
+
+    async def broadcast(self, message: str):
+        for connection in self.active_connections.copy():
+            try:
+                await connection.send_text(message)
+            except Exception as e:
+                self.disconnect(connection)
+
+ws_manager = ConnectionManager()
+
+async def broadcast_state():
+    if ws_manager.active_connections:
+        state = await get_status()
+        await ws_manager.broadcast(json.dumps(state))
+
 engine = None
 
 # Mount Frontend
@@ -103,7 +156,19 @@ async def get_status():
         "performance_stats": engine.performance_stats if engine else {"rolling_7d": {"labels": [], "data": []}, "historical": {"labels": [], "data": []}}
     }
 
-@app.post("/settings/update")
+@app.websocket("/ws/status")
+async def websocket_status(websocket: WebSocket):
+    await ws_manager.connect(websocket)
+    try:
+        if engine:
+            initial_state = await get_status()
+            await websocket.send_text(json.dumps(initial_state))
+        while True:
+            data = await websocket.receive_text()
+    except WebSocketDisconnect:
+        ws_manager.disconnect(websocket)
+
+@app.post("/settings/update", dependencies=[Depends(verify_api_key)])
 async def update_settings(data: ConfigUpdate):
     if engine:
         engine.config['trading']['default_risk_percent'] = data.risk_percent
@@ -138,6 +203,7 @@ async def update_settings(data: ConfigUpdate):
         try:
             with open("config/settings.yaml", "w") as f:
                 yaml.dump(engine.config, f)
+            asyncio.create_task(broadcast_state())
             return {"status": "success", "message": "Settings saved & updated"}
         except Exception as e:
             return {"status": "error", "message": f"Failed to save: {e}"}
@@ -148,18 +214,19 @@ class ManualSignal(BaseModel):
     text: str
     asset_type: str = "forex"
 
-@app.post("/engine/inject-signal")
+@app.post("/engine/inject-signal", dependencies=[Depends(verify_api_key)])
 async def inject_signal(data: ManualSignal):
     if engine:
         result = await engine.process_manual_signal(data.text, data.asset_type)
         return result
     return {"status": "error", "message": "Engine not initialized"}
 
-@app.post("/engine/toggle-trades")
+@app.post("/engine/toggle-trades", dependencies=[Depends(verify_api_key)])
 async def toggle_trades():
     if engine:
         engine.new_trades_enabled = not engine.new_trades_enabled
         status = "ENABLED" if engine.new_trades_enabled else "STANDBY"
+        asyncio.create_task(broadcast_state())
         return {"status": "success", "new_state": engine.new_trades_enabled, "message": f"Global trade execution is now {status}"}
     return {"status": "error", "message": "Engine not initialized"}
 
@@ -175,7 +242,7 @@ async def view_logs(lines: int = 100):
     except Exception as e:
         return f"Error reading logs: {e}"
 
-@app.post("/logs/level/{level}")
+@app.post("/logs/level/{level}", dependencies=[Depends(verify_api_key)])
 async def set_log_level(level: str):
     """Set the logging level dynamically: DEBUG, INFO, WARNING, ERROR"""
     level = level.upper()
