@@ -34,6 +34,7 @@ class TradingEngine:
         # Advanced State Tracking
         self.active_signals = {} # map signal_id -> status
         self._recent_signals = {} # map: "SYMBOL_SIDE" -> timestamp
+        self.bybit_be_applied = set() # Track symbols where BE has been applied
         self.monitored_channels = config.get('channels', [])
         
         # Performance Stats
@@ -496,7 +497,9 @@ class TradingEngine:
             try:
                 if self.config['mt5']['enabled']:
                     await self._manage_mt5_protection()
-                # Bybit protection logic would go here
+                
+                if self.config['bybit']['enabled'] and self.bybit_session:
+                    await self._manage_bybit_protection()
             except Exception as e:
                 self.logger.error(f"Protection monitor error: {e}")
             await asyncio.sleep(1) # Check every second for low latency execution
@@ -646,6 +649,101 @@ class TradingEngine:
                         new_sl = current_price + threshold
                         if pos.sl == 0 or new_sl < pos.sl:
                             self._modify_sl(pos, new_sl, info)
+
+    async def _manage_bybit_protection(self):
+        """Check all open Bybit positions for BE and trailing stop trigger"""
+        try:
+            positions_resp = self.bybit_session.get_positions(category="linear", settleCoin="USDT")
+            positions = positions_resp.get('result', {}).get('list', [])
+            
+            # Identify which symbols are still active to clean up our BE tracking set
+            active_bybit_symbols = set()
+            
+            for pos in positions:
+                symbol = pos['symbol']
+                size = float(pos['size'])
+                
+                # Skip if position is closed
+                if size == 0:
+                    continue
+                
+                active_bybit_symbols.add(symbol)
+                
+                # If BE already applied, skip further checks for this symbol
+                if symbol in self.bybit_be_applied:
+                    continue
+                    
+                side = pos['side']  # "Buy" or "Sell"
+                entry_price = float(pos['avgPrice'])
+                current_sl = float(pos.get('stopLoss')) if pos.get('stopLoss') and float(pos.get('stopLoss')) > 0 else None
+                
+                # Find the associated signal (matching either raw or suffixed symbol)
+                signal_data = next((s for s in self.active_signals.values() if s['symbol'] == symbol or s['symbol'].replace(self.config['trading'].get('symbol_suffix', ''), '') == symbol), None)
+                
+                if not signal_data or not signal_data.get('tps'):
+                    continue
+                
+                tp1 = signal_data['tps'][0]
+                
+                # Get current market price
+                ticker_resp = self.bybit_session.get_tickers(category="linear", symbol=symbol)
+                tickers = ticker_resp.get('result', {}).get('list', [])
+                if not tickers:
+                    continue
+                last_price = float(tickers[0]['lastPrice'])
+                
+                # Check if TP1 has been reached
+                tp1_reached = False
+                if side == "Buy":
+                    if last_price >= tp1:
+                        tp1_reached = True
+                else:  # Sell
+                    if last_price <= tp1:
+                        tp1_reached = True
+                
+                if not tp1_reached:
+                    continue
+                
+                # Get settings
+                be_enabled = self.config['trading'].get('be_enabled', True)
+                be_buffer_pips = self.config['trading'].get('be_buffer', 5.0)
+                
+                if not be_enabled:
+                    continue
+                
+                # Calculate breakeven price with buffer
+                # For crypto, interpret "pips" as a percentage (e.g., 5 pips = 0.05%)
+                buffer_fraction = be_buffer_pips / 10000.0
+                
+                if side == "Buy":
+                    be_price = entry_price * (1 + buffer_fraction)
+                    sl_needs_move = current_sl is None or current_sl < be_price
+                else:  # Sell
+                    be_price = entry_price * (1 - buffer_fraction)
+                    sl_needs_move = current_sl is None or current_sl > be_price
+                
+                if sl_needs_move:
+                    try:
+                        resp = self.bybit_session.set_trading_stop(
+                            category="linear",
+                            symbol=symbol,
+                            stopLoss=str(round(be_price, 8)),
+                            tpslMode="Full",  # Apply to entire remaining position
+                            positionIdx=0
+                        )
+                        self.logger.info(f"🔒 Bybit Breakeven: {symbol} SL moved to {be_price}")
+                        self.logger.debug(f"   set_trading_stop response: {resp}")
+                        self.bybit_be_applied.add(symbol)
+                    except Exception as e:
+                        self.logger.error(f"Failed to move Bybit SL to breakeven for {symbol}: {e}")
+            
+            # Clean up the tracking set: remove symbols that are no longer in active_bybit_symbols
+            inactive_symbols = self.bybit_be_applied - active_bybit_symbols
+            for sym in inactive_symbols:
+                self.bybit_be_applied.discard(sym)
+                        
+        except Exception as e:
+            self.logger.debug(f"Bybit protection check error: {e}")
 
     def _modify_sl(self, pos, new_sl, info):
         """Internal helper to modify SL with Stop Level guards"""
@@ -823,6 +921,7 @@ class TradingEngine:
                             )
                             self.logger.info(f"🛑 Bybit Position Closed: {bybit_symbol} ({size})")
                             # Remove from active signals
+                            self.bybit_be_applied.discard(bybit_symbol)
                             rid = next((k for k, v in self.active_signals.items() if v.get('symbol') == bybit_symbol), None)
                             if rid:
                                 del self.active_signals[rid]
@@ -1160,6 +1259,9 @@ class TradingEngine:
 
             self.logger.info(f"✅ Bybit Main Order Placed: {symbol} {qty}")
             
+            # Wait for the position to settle on Bybit's side
+            await asyncio.sleep(1.0)
+            
             if tp_mode == 'progressive' and signal.get('tps'):
                 import math
                 splits = self.config['trading'].get('tp_split', [33, 33, 34])
@@ -1187,7 +1289,7 @@ class TradingEngine:
                     if chunk_size > 0:
                         accumulated_qty += chunk_size
                         try:
-                            self.bybit_session.set_trading_stop(
+                            tp_resp = self.bybit_session.set_trading_stop(
                                 category="linear",
                                 symbol=symbol,
                                 tpslMode="Partial",
@@ -1200,6 +1302,10 @@ class TradingEngine:
                                 positionIdx=0
                             )
                             self.logger.info(f"✅ Bybit Partial TP{i+1} Set: {symbol} {chunk_size} @ {tp_price}")
+                            self.logger.debug(f"   set_trading_stop response: {tp_resp}")
+                            
+                            # Small delay between each TP placement
+                            await asyncio.sleep(0.3)
                         except Exception as e:
                             self.logger.error(f"❌ Failed to set Bybit Partial TP{i+1}: {e}")
 
