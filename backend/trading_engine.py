@@ -35,6 +35,7 @@ class TradingEngine:
         self.active_signals = {} # map signal_id -> status
         self._recent_signals = {} # map: "SYMBOL_SIDE" -> timestamp
         self.bybit_be_applied = set() # Track symbols where BE has been applied
+        self.bybit_ts_activated = set() # Track symbols where TS has been activated
         self.monitored_channels = config.get('channels', [])
         
         # Performance Stats
@@ -287,8 +288,10 @@ class TradingEngine:
                     if not found:
                         self.logger.info(f"🔗 Linking orphan Bybit position: {sym}")
                         new_sig_id = f"RESTORED_BYBIT_{sym}_{int(time.time())}"
-                        sl_val = float(p.get('stopLoss', 0))
-                        tp_val = float(p.get('takeProfit', 0))
+                        sl_val_raw = p.get('stopLoss', '')
+                        tp_val_raw = p.get('takeProfit', '')
+                        sl_val = float(sl_val_raw) if sl_val_raw and sl_val_raw != "" else 0.0
+                        tp_val = float(tp_val_raw) if tp_val_raw and tp_val_raw != "" else 0.0
                         
                         self.active_signals[new_sig_id] = {
                             "symbol": sym,
@@ -736,11 +739,60 @@ class TradingEngine:
                         self.bybit_be_applied.add(symbol)
                     except Exception as e:
                         self.logger.error(f"Failed to move Bybit SL to breakeven for {symbol}: {e}")
+                
+                # 2. Trailing Stop Logic
+                trailing_enabled = self.config['trading'].get('trailing_enabled', False)
+                
+                if trailing_enabled:
+                    activation_pips = self.config['trading'].get('trailing_activation_pips', 20.0)
+                    distance_pips = self.config['trading'].get('trailing_distance_pips', 15.0)
+                    
+                    activation_pct = activation_pips / 10000.0
+                    distance_pct = distance_pips / 10000.0
+                    
+                    # Check for activation
+                    if symbol not in self.bybit_ts_activated:
+                        activated = False
+                        if side == "Buy" and last_price >= entry_price * (1 + activation_pct):
+                            activated = True
+                        elif side == "Sell" and last_price <= entry_price * (1 - activation_pct):
+                            activated = True
+                            
+                        if activated:
+                            self.bybit_ts_activated.add(symbol)
+                            self.logger.info(f"🚀 Bybit Trailing Stop Activated for {symbol}")
+                    
+                    # If activated, manage the trail
+                    if symbol in self.bybit_ts_activated:
+                        distance_price = entry_price * distance_pct
+                        
+                        if side == "Buy":
+                            new_sl_trail = last_price - distance_price
+                            if current_sl is None or new_sl_trail > current_sl:
+                                # Move SL up
+                                try:
+                                    self.bybit_session.set_trading_stop(category="linear", symbol=symbol, stopLoss=str(round(new_sl_trail, 8)), tpslMode="Full", positionIdx=0)
+                                    self.logger.info(f"📈 Bybit Trailing SL updated for {symbol} to {new_sl_trail}")
+                                except Exception as e:
+                                    self.logger.error(f"Failed to update trailing SL for {symbol}: {e}")
+                        else: # Sell
+                            new_sl_trail = last_price + distance_price
+                            if current_sl is None or (current_sl != 0 and new_sl_trail < current_sl):
+                                # Move SL down
+                                try:
+                                    self.bybit_session.set_trading_stop(category="linear", symbol=symbol, stopLoss=str(round(new_sl_trail, 8)), tpslMode="Full", positionIdx=0)
+                                    self.logger.info(f"📉 Bybit Trailing SL updated for {symbol} to {new_sl_trail}")
+                                except Exception as e:
+                                    self.logger.error(f"Failed to update trailing SL for {symbol}: {e}")
             
-            # Clean up the tracking set: remove symbols that are no longer in active_bybit_symbols
-            inactive_symbols = self.bybit_be_applied - active_bybit_symbols
-            for sym in inactive_symbols:
+            # Clean up the tracking sets: remove symbols that are no longer in active_bybit_symbols
+            inactive_be = self.bybit_be_applied - active_bybit_symbols
+            for sym in inactive_be:
                 self.bybit_be_applied.discard(sym)
+                
+            inactive_ts = self.bybit_ts_activated - active_bybit_symbols
+            for sym in inactive_ts:
+                self.bybit_ts_activated.discard(sym)
                         
         except Exception as e:
             self.logger.debug(f"Bybit protection check error: {e}")
@@ -922,6 +974,7 @@ class TradingEngine:
                             self.logger.info(f"🛑 Bybit Position Closed: {bybit_symbol} ({size})")
                             # Remove from active signals
                             self.bybit_be_applied.discard(bybit_symbol)
+                            self.bybit_ts_activated.discard(bybit_symbol)
                             rid = next((k for k, v in self.active_signals.items() if v.get('symbol') == bybit_symbol), None)
                             if rid:
                                 del self.active_signals[rid]

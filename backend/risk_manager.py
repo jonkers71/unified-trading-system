@@ -29,8 +29,9 @@ class RiskManager:
         tick_size = symbol_info.trade_tick_size
         tick_value = symbol_info.trade_tick_value
         
-        if tick_size == 0:
-              return 0.0
+        if tick_value == 0 or tick_size == 0:
+            self.logger.error(f"Invalid tick data for {symbol_info.name}: TickSize={tick_size}, TickValue={tick_value}. Cannot calculate lot size.")
+            return 0.0
               
         # Lot = Risk / (Points / TickSize * TickValue)
         lot = risk_amount / (points_at_risk / tick_size * tick_value)
