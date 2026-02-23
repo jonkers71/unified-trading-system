@@ -17,4 +17,4 @@ config/settings.yaml
 .vscode/
 .idea/
 My Logs/
-unified_trader_session.session
+config/*.session
