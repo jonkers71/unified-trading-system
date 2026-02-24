@@ -36,7 +36,6 @@ class TradingEngine:
         self._recent_signals = {} # map: "SYMBOL_SIDE" -> timestamp
         self.bybit_be_applied = set() # Track symbols where BE has been applied
         self.bybit_ts_activated = set() # Track symbols where TS has been activated
-        self.processed_pnl_trade_ids = set() # Track unique closed trade PnLs to avoid double-counting
         self.monitored_channels = config.get('channels', [])
         
         # Performance Stats
@@ -118,7 +117,6 @@ class TradingEngine:
         asyncio.create_task(self._latency_monitor_loop())
         asyncio.create_task(self._protection_monitor_loop())
         asyncio.create_task(self._performance_update_loop())
-        asyncio.create_task(self._update_daily_pnl())
         
         # Keep engine running
         await self.client.run_until_disconnected()
@@ -146,10 +144,6 @@ class TradingEngine:
                 cursor.execute(
                     "INSERT OR REPLACE INTO app_state (key, value) VALUES (?, ?)",
                     ("daily_profit", json.dumps(self.daily_profit))
-                )
-                cursor.execute(
-                    "INSERT OR REPLACE INTO app_state (key, value) VALUES (?, ?)",
-                    ("processed_pnl_ids", json.dumps(list(self.processed_pnl_trade_ids)))
                 )
                 conn.commit()
             
@@ -206,11 +200,11 @@ class TradingEngine:
                     
                 # Load app state
                 cursor.execute("SELECT key, value FROM app_state")
-                state_dict = {row[0]: json.loads(row[1]) for row in cursor.fetchall()}
+                state_rows = cursor.fetchall()
+                state_dict = {row[0]: json.loads(row[1]) for row in state_rows}
                 
                 self.daily_profit = state_dict.get("daily_profit", 0.0)
                 self.trade_history = state_dict.get("trade_history", [])
-                self.processed_pnl_trade_ids = set(state_dict.get("processed_pnl_ids", []))
                 
                 self.logger.info(f"📂 State Loaded: {len(self.active_signals)} active signals restored from SQLite.")
         except Exception as e:
@@ -678,55 +672,75 @@ class TradingEngine:
                 
                 active_bybit_symbols.add(symbol)
                 
+                # If BE already applied, skip further checks for this symbol
+                if symbol in self.bybit_be_applied:
+                    continue
+                    
                 side = pos['side']  # "Buy" or "Sell"
                 entry_price = float(pos['avgPrice'])
                 current_sl = float(pos.get('stopLoss')) if pos.get('stopLoss') and float(pos.get('stopLoss')) > 0 else None
                 
-                # Get current market price (shared for both BE and TS logic)
+                # Find the associated signal (matching either raw or suffixed symbol)
+                signal_data = next((s for s in self.active_signals.values() if s['symbol'] == symbol or s['symbol'].replace(self.config['trading'].get('symbol_suffix', ''), '') == symbol), None)
+                
+                if not signal_data or not signal_data.get('tps'):
+                    continue
+                
+                tp1 = signal_data['tps'][0]
+                
+                # Get current market price
                 ticker_resp = self.bybit_session.get_tickers(category="linear", symbol=symbol)
                 tickers = ticker_resp.get('result', {}).get('list', [])
                 if not tickers:
                     continue
                 last_price = float(tickers[0]['lastPrice'])
                 
-                # --- Block 1: Independent Breakeven Logic ---
-                if symbol not in self.bybit_be_applied:
-                    be_enabled = self.config['trading'].get('be_enabled', True)
-                    
-                    if be_enabled:
-                        # Find the associated signal to get TP1
-                        signal_data = next((s for s in self.active_signals.values() if s['symbol'] == symbol or s['symbol'].replace(self.config['trading'].get('symbol_suffix', ''), '') == symbol), None)
-                        
-                        if signal_data and signal_data.get('tps'):
-                            tp1 = signal_data['tps'][0]
-                            
-                            # Check if TP1 reached
-                            tp1_reached = (side == "Buy" and last_price >= tp1) or (side == "Sell" and last_price <= tp1)
-                            
-                            if tp1_reached:
-                                be_buffer_pips = self.config['trading'].get('be_buffer', 5.0)
-                                buffer_fraction = be_buffer_pips / 10000.0
-                                
-                                if side == "Buy":
-                                    be_price = entry_price * (1 + buffer_fraction)
-                                    sl_needs_move = current_sl is None or current_sl < be_price
-                                else:  # Sell
-                                    be_price = entry_price * (1 - buffer_fraction)
-                                    sl_needs_move = current_sl is None or current_sl > be_price
-                                
-                                if sl_needs_move:
-                                    try:
-                                        self.bybit_session.set_trading_stop(
-                                            category="linear", symbol=symbol,
-                                            stopLoss=str(round(be_price, 8)),
-                                            tpslMode="Full", positionIdx=0
-                                        )
-                                        self.logger.info(f"🔒 Bybit Breakeven: {symbol} SL moved to {be_price:.8f}")
-                                        self.bybit_be_applied.add(symbol)
-                                    except Exception as e:
-                                        self.logger.error(f"Failed to move Bybit SL to breakeven for {symbol}: {e}")
+                # Check if TP1 has been reached
+                tp1_reached = False
+                if side == "Buy":
+                    if last_price >= tp1:
+                        tp1_reached = True
+                else:  # Sell
+                    if last_price <= tp1:
+                        tp1_reached = True
                 
-                # --- Block 2: Independent Trailing Stop Logic ---
+                if not tp1_reached:
+                    continue
+                
+                # Get settings
+                be_enabled = self.config['trading'].get('be_enabled', True)
+                be_buffer_pips = self.config['trading'].get('be_buffer', 5.0)
+                
+                if not be_enabled:
+                    continue
+                
+                # Calculate breakeven price with buffer
+                # For crypto, interpret "pips" as a percentage (e.g., 5 pips = 0.05%)
+                buffer_fraction = be_buffer_pips / 10000.0
+                
+                if side == "Buy":
+                    be_price = entry_price * (1 + buffer_fraction)
+                    sl_needs_move = current_sl is None or current_sl < be_price
+                else:  # Sell
+                    be_price = entry_price * (1 - buffer_fraction)
+                    sl_needs_move = current_sl is None or current_sl > be_price
+                
+                if sl_needs_move:
+                    try:
+                        resp = self.bybit_session.set_trading_stop(
+                            category="linear",
+                            symbol=symbol,
+                            stopLoss=str(round(be_price, 8)),
+                            tpslMode="Full",  # Apply to entire remaining position
+                            positionIdx=0
+                        )
+                        self.logger.info(f"🔒 Bybit Breakeven: {symbol} SL moved to {be_price}")
+                        self.logger.debug(f"   set_trading_stop response: {resp}")
+                        self.bybit_be_applied.add(symbol)
+                    except Exception as e:
+                        self.logger.error(f"Failed to move Bybit SL to breakeven for {symbol}: {e}")
+                
+                # 2. Trailing Stop Logic
                 trailing_enabled = self.config['trading'].get('trailing_enabled', False)
                 
                 if trailing_enabled:
@@ -736,13 +750,17 @@ class TradingEngine:
                     activation_pct = activation_pips / 10000.0
                     distance_pct = distance_pips / 10000.0
                     
-                    # Check for activation if not already active
+                    # Check for activation
                     if symbol not in self.bybit_ts_activated:
-                        profit_pct = (last_price - entry_price) / entry_price if side == "Buy" else (entry_price - last_price) / entry_price
-                        
-                        if profit_pct >= activation_pct:
+                        activated = False
+                        if side == "Buy" and last_price >= entry_price * (1 + activation_pct):
+                            activated = True
+                        elif side == "Sell" and last_price <= entry_price * (1 - activation_pct):
+                            activated = True
+                            
+                        if activated:
                             self.bybit_ts_activated.add(symbol)
-                            self.logger.info(f"🚀 Bybit Trailing Stop Activated for {symbol} (Profit: {profit_pct*100:.2f}%)")
+                            self.logger.info(f"🚀 Bybit Trailing Stop Activated for {symbol}")
                     
                     # If activated, manage the trail
                     if symbol in self.bybit_ts_activated:
@@ -751,28 +769,21 @@ class TradingEngine:
                         if side == "Buy":
                             new_sl_trail = last_price - distance_price
                             if current_sl is None or new_sl_trail > current_sl:
+                                # Move SL up
                                 try:
-                                    self.bybit_session.set_trading_stop(
-                                        category="linear", symbol=symbol,
-                                        stopLoss=str(round(new_sl_trail, 8)),
-                                        tpslMode="Full", positionIdx=0
-                                    )
-                                    self.logger.info(f"📈 Bybit Trailing SL updated for {symbol} to {new_sl_trail:.8f}")
+                                    self.bybit_session.set_trading_stop(category="linear", symbol=symbol, stopLoss=str(round(new_sl_trail, 8)), tpslMode="Full", positionIdx=0)
+                                    self.logger.info(f"📈 Bybit Trailing SL updated for {symbol} to {new_sl_trail}")
                                 except Exception as e:
                                     self.logger.error(f"Failed to update trailing SL for {symbol}: {e}")
-                        else:  # Sell
+                        else: # Sell
                             new_sl_trail = last_price + distance_price
                             if current_sl is None or (current_sl != 0 and new_sl_trail < current_sl):
+                                # Move SL down
                                 try:
-                                    self.bybit_session.set_trading_stop(
-                                        category="linear", symbol=symbol,
-                                        stopLoss=str(round(new_sl_trail, 8)),
-                                        tpslMode="Full", positionIdx=0
-                                    )
-                                    self.logger.info(f"📉 Bybit Trailing SL updated for {symbol} to {new_sl_trail:.8f}")
+                                    self.bybit_session.set_trading_stop(category="linear", symbol=symbol, stopLoss=str(round(new_sl_trail, 8)), tpslMode="Full", positionIdx=0)
+                                    self.logger.info(f"📉 Bybit Trailing SL updated for {symbol} to {new_sl_trail}")
                                 except Exception as e:
                                     self.logger.error(f"Failed to update trailing SL for {symbol}: {e}")
-
             
             # Clean up the tracking sets: remove symbols that are no longer in active_bybit_symbols
             inactive_be = self.bybit_be_applied - active_bybit_symbols
@@ -1382,35 +1393,3 @@ class TradingEngine:
                 "time": time.strftime("%H:%M:%S"), "symbol": symbol, "type": signal['side'],
                 "target": "--", "status": "Bybit: Error", "success": False
             })
-
-    async def _update_daily_pnl(self):
-        """Periodically fetch closed P&L from Bybit and update the daily total."""
-        while True:
-            try:
-                if self.config['bybit']['enabled'] and self.bybit_session:
-                    response = self.bybit_session.get_closed_pnl(category="linear", limit=50)
-                    
-                    if response.get("retCode") != 0:
-                        self.logger.warning(f"Bybit P&L fetch failed: {response.get('retMsg')}")
-                    else:
-                        pnl_records = response.get("result", {}).get("list", [])
-                        new_pnl_added = False
-                        
-                        for record in pnl_records:
-                            # Unique Trade ID: symbol + orderId + createdTime
-                            trade_id = f"{record['symbol']}_{record['orderId']}_{record['createdTime']}"
-                            
-                            if trade_id not in self.processed_pnl_trade_ids:
-                                closed_pnl = float(record.get("closedPnl", 0))
-                                self.daily_profit += closed_pnl
-                                self.processed_pnl_trade_ids.add(trade_id)
-                                new_pnl_added = True
-                                self.logger.info(f"💰 P&L Update: {closed_pnl:+.2f} USDT from {record['symbol']}. Total: {self.daily_profit:.2f} USDT")
-                        
-                        if new_pnl_added:
-                            self._save_state()
-                            
-            except Exception as e:
-                self.logger.error(f"Error updating daily P&L: {e}")
-            
-            await asyncio.sleep(30) # Run every 30 seconds
