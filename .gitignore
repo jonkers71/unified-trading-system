@@ -18,3 +18,5 @@ config/settings.yaml
 .idea/
 My Logs/
 config/*.session
+*.backup
+
