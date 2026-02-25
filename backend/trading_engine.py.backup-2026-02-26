@@ -741,24 +741,37 @@ class TradingEngine:
                         profit_pct = (last_price - entry_price) / entry_price if side == "Buy" else (entry_price - last_price) / entry_price
                         
                         if profit_pct >= activation_pct:
-                            # Activate Bybit's native trailing stop
-                            # trailing_distance_price is in absolute price terms
-                            trailing_distance_price = entry_price * distance_pct
-                            activation_price = entry_price * (1 + activation_pct) if side == "Buy" else entry_price * (1 - activation_pct)
-                            
-                            try:
-                                self.bybit_session.set_trading_stop(
-                                    category="linear",
-                                    symbol=symbol,
-                                    tpslMode="Full",
-                                    trailingStop=str(round(trailing_distance_price, 8)),
-                                    activePrice=str(round(activation_price, 8)),
-                                    positionIdx=0
-                                )
-                                self.bybit_ts_activated.add(symbol)
-                                self.logger.info(f"🚀 Bybit Native Trailing Stop Activated for {symbol} (Distance: {distance_pips} pips, Activation: {activation_price:.8f})")
-                            except Exception as e:
-                                self.logger.error(f"Failed to activate native trailing stop for {symbol}: {e}")
+                            self.bybit_ts_activated.add(symbol)
+                            self.logger.info(f"🚀 Bybit Trailing Stop Activated for {symbol} (Profit: {profit_pct*100:.2f}%)")
+                    
+                    # If activated, manage the trail
+                    if symbol in self.bybit_ts_activated:
+                        distance_price = entry_price * distance_pct
+                        
+                        if side == "Buy":
+                            new_sl_trail = last_price - distance_price
+                            if current_sl is None or new_sl_trail > current_sl:
+                                try:
+                                    self.bybit_session.set_trading_stop(
+                                        category="linear", symbol=symbol,
+                                        stopLoss=str(round(new_sl_trail, 8)),
+                                        tpslMode="Full", positionIdx=0
+                                    )
+                                    self.logger.info(f"📈 Bybit Trailing SL updated for {symbol} to {new_sl_trail:.8f}")
+                                except Exception as e:
+                                    self.logger.error(f"Failed to update trailing SL for {symbol}: {e}")
+                        else:  # Sell
+                            new_sl_trail = last_price + distance_price
+                            if current_sl is None or (current_sl != 0 and new_sl_trail < current_sl):
+                                try:
+                                    self.bybit_session.set_trading_stop(
+                                        category="linear", symbol=symbol,
+                                        stopLoss=str(round(new_sl_trail, 8)),
+                                        tpslMode="Full", positionIdx=0
+                                    )
+                                    self.logger.info(f"📉 Bybit Trailing SL updated for {symbol} to {new_sl_trail:.8f}")
+                                except Exception as e:
+                                    self.logger.error(f"Failed to update trailing SL for {symbol}: {e}")
 
             
             # Clean up the tracking sets: remove symbols that are no longer in active_bybit_symbols
@@ -1197,19 +1210,6 @@ class TradingEngine:
 
     def _log_trade(self, result, symbol, lot, signal):
         """Log trade result and append to history"""
-        if result is None:
-            self.logger.error(f"❌ MT5 order_send returned None for {symbol}. Check MT5 connection and symbol availability.")
-            self.trade_history.append({
-                "time": time.strftime("%H:%M:%S"),
-                "symbol": symbol,
-                "type": signal['side'],
-                "target": f"{lot} lots",
-                "status": "MT5: Error (None result)",
-                "success": False
-            })
-            self._save_state()
-            return
-
         if result.retcode != mt5.TRADE_RETCODE_DONE:
             self.logger.error(f"❌ Trade Failed for {symbol}: {result.comment}")
             status = f"Failed: {result.comment}"
