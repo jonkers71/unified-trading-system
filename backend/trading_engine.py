@@ -35,7 +35,6 @@ class TradingEngine:
         self.active_signals = {} # map signal_id -> status
         self._recent_signals = {} # map: "SYMBOL_SIDE" -> timestamp
         self.bybit_be_applied = set() # Track symbols where BE has been applied
-        self.bybit_ts_activated = set() # Track symbols where TS has been activated
         self.processed_pnl_trade_ids = set() # Track unique closed trade PnLs to avoid double-counting
         self.monitored_channels = config.get('channels', [])
         
@@ -726,49 +725,10 @@ class TradingEngine:
                                     except Exception as e:
                                         self.logger.error(f"Failed to move Bybit SL to breakeven for {symbol}: {e}")
                 
-                # --- Block 2: Independent Trailing Stop Logic ---
-                trailing_enabled = self.config['trading'].get('trailing_enabled', False)
-                
-                if trailing_enabled:
-                    activation_pips = self.config['trading'].get('trailing_activation_pips', 20.0)
-                    distance_pips = self.config['trading'].get('trailing_distance_pips', 15.0)
-                    
-                    activation_pct = activation_pips / 10000.0
-                    distance_pct = distance_pips / 10000.0
-                    
-                    # Check for activation if not already active
-                    if symbol not in self.bybit_ts_activated:
-                        profit_pct = (last_price - entry_price) / entry_price if side == "Buy" else (entry_price - last_price) / entry_price
-                        
-                        if profit_pct >= activation_pct:
-                            # Activate Bybit's native trailing stop
-                            # trailing_distance_price is in absolute price terms
-                            trailing_distance_price = entry_price * distance_pct
-                            activation_price = entry_price * (1 + activation_pct) if side == "Buy" else entry_price * (1 - activation_pct)
-                            
-                            try:
-                                self.bybit_session.set_trading_stop(
-                                    category="linear",
-                                    symbol=symbol,
-                                    tpslMode="Full",
-                                    trailingStop=str(round(trailing_distance_price, 8)),
-                                    activePrice=str(round(activation_price, 8)),
-                                    positionIdx=0
-                                )
-                                self.bybit_ts_activated.add(symbol)
-                                self.logger.info(f"🚀 Bybit Native Trailing Stop Activated for {symbol} (Distance: {distance_pips} pips, Activation: {activation_price:.8f})")
-                            except Exception as e:
-                                self.logger.error(f"Failed to activate native trailing stop for {symbol}: {e}")
-
-            
             # Clean up the tracking sets: remove symbols that are no longer in active_bybit_symbols
             inactive_be = self.bybit_be_applied - active_bybit_symbols
             for sym in inactive_be:
                 self.bybit_be_applied.discard(sym)
-                
-            inactive_ts = self.bybit_ts_activated - active_bybit_symbols
-            for sym in inactive_ts:
-                self.bybit_ts_activated.discard(sym)
                         
         except Exception as e:
             self.logger.debug(f"Bybit protection check error: {e}")
@@ -950,7 +910,6 @@ class TradingEngine:
                             self.logger.info(f"🛑 Bybit Position Closed: {bybit_symbol} ({size})")
                             # Remove from active signals
                             self.bybit_be_applied.discard(bybit_symbol)
-                            self.bybit_ts_activated.discard(bybit_symbol)
                             rid = next((k for k, v in self.active_signals.items() if v.get('symbol') == bybit_symbol), None)
                             if rid:
                                 del self.active_signals[rid]
@@ -1301,6 +1260,50 @@ class TradingEngine:
 
             self.logger.info(f"✅ Bybit Main Order Placed: {symbol} {qty}")
             
+            # --- NEW: Set Trailing Stop immediately at Entry ---
+            trailing_enabled = self.config['trading'].get('trailing_enabled', False)
+            if trailing_enabled:
+                if not signal.get('tps') or len(signal['tps']) < 1:
+                    self.logger.warning(f"⚠️ No TP1 for {symbol}, skipping trailing")
+                else:
+                    try:
+                        entry_price = float(signal.get('entry', 0))
+                        tp1 = signal['tps'][0]
+                        # Use configurable activation % or default 90%
+                        activation_p = self.config['trading'].get('trailing_activation_pct', 0.90)
+                        
+                        # Safety: activation price
+                        if side == "Buy":
+                            raw_activation = entry_price + (tp1 - entry_price) * activation_p
+                        else:
+                            raw_activation = entry_price - (entry_price - tp1) * activation_p
+                        
+                        # Safety Check: prevent activation too close to entry (0.5% default)
+                        min_dist_pct = self.config['trading'].get('min_activation_distance', 0.005)
+                        min_activation = entry_price * (1 + min_dist_pct) if side == "Buy" else entry_price * (1 - min_dist_pct)
+                        
+                        if side == "Buy":
+                            activation_price = max(raw_activation, min_activation)
+                        else:
+                            activation_price = min(raw_activation, min_activation)
+                            
+                        # Calculate trailing distance in price terms
+                        # Using existing distance_pips config
+                        trailing_pips = self.config['trading'].get('trailing_distance_pips', 15)
+                        trailing_distance = entry_price * (trailing_pips / 10000.0)
+
+                        self.bybit_session.set_trading_stop(
+                            category="linear",
+                            symbol=symbol,
+                            tpslMode="Full",
+                            trailingStop=str(round(trailing_distance, 8)),
+                            activePrice=str(round(activation_price, 8)),
+                            positionIdx=0
+                        )
+                        self.logger.info(f"🚀 Trailing Stop Set at Entry for {symbol} (Activation: {activation_price:.8f}, Distance: {trailing_pips} pips, TP1: {tp1:.8f})")
+                    except Exception as e:
+                        self.logger.error(f"Failed to set trailing stop at entry for {symbol}: {e}")
+
             # Wait for the position to settle on Bybit's side
             await asyncio.sleep(1.0)
             
