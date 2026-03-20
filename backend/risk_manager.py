@@ -36,14 +36,16 @@ class RiskManager:
         # Lot = Risk / (Points / TickSize * TickValue)
         lot = risk_amount / (points_at_risk / tick_size * tick_value)
         
-        # Round to lot_step
+        # Round up to lot_step to stay safely above minimums
         lot_step = symbol_info.volume_step
-        lot = math.floor(lot / lot_step) * lot_step
+        lot = math.ceil(lot / lot_step) * lot_step
         
         # Clamp to min/max
         lot = max(symbol_info.volume_min, min(symbol_info.volume_max, lot))
         
-        return round(lot, 2)
+        final_lot = round(lot, 2)
+        self.logger.debug(f"Lot calculation for {symbol_info.name}: Risk={risk_amount:.2f}, Balance={balance:.2f}, Calculated={lot:.4f}, Final={final_lot}")
+        return final_lot
 
     def calculate_bybit_qty(self, symbol_rules, entry, sl, balance):
         """

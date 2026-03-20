@@ -14,15 +14,15 @@ class SignalParser:
         # Common regex patterns
         self.patterns = {
             # Symbol: specific knowns first, then generic letters. 
-            # Restricted generic [A-Z]{3,} to NOT match common noise words like "SIGNAL", "ALERT"
-            'symbol': r'(XAUUSD|BTCUSDT|ETHUSDT|BCHUSDT|XRPUSDT|SOLUSDT|DOGEUSDT|GOLD|\d*[A-Z]{3,}/?[A-Z]{3,})',
+            # Added support for # prefix and digits (e.g. #BTC, 1000PEPE)
+            'symbol': r'(?:#)?(XAUUSD|BTCUSDT|ETHUSDT|BCHUSDT|XRPUSDT|SOLUSDT|DOGEUSDT|GOLD|\d*[A-Z]{3,}/?[A-Z]{3,})',
             'type': r'(BUY|SELL|LONG|SHORT)',
             # Entry: supports "ENTRY:", "PRICE:", "AT", "@", "Enter below:", "Enter at:"
             'price': r'(?:ENTRY\s*(?:ZONE|PRICE)?|PRICE|ENTER\s*(?:BELOW|AT|AROUND)?|AT|@)\s*:?\s*(\d+\.?\d*)',
             # SL: handles optional emojis like 🔴, 🚫, ❌, 🛑
             'sl': r'(?:🔴|🚫|❌|🛑|STOPLOSS|STOP\s*LOSS|SL)\s*:?\s*(\d+\.?\d*)',
-            # TP: handles "TP1: 1234.5", "💰TP1 1234.5", "🤑TP1: 1234.5" formats
-            'tp': r'(?:💰|🤑|🎯|🏹)?\s*(?:\s*)?(?:TP|TARGET|TAKEPROFIT|TARGET)\s*(\d+)?\s*:?\s*(\d+\.?\d*)',
+            # TP: handles "TP1: 1234.5", "💰TP1 1234.5"
+            'tp': r'(?:💰|🤑|🎯|🏹|✅)?\s*(?:\s*)?(?:TP|TARGET|TAKEPROFIT|TARGET)\s*(\d+)?\s*:?\s*(\d+\.?\d*)',
             'action_move_sl': r'(?:MOVE SL TO|SL TO|BE)\s*:?\s*(\d+\.?\d*)',
             'action_close': r'(?:CLOSE|EXIT)\s+(?:HALF|PARTIAL|ALL|NOW)',
             # Leverage for crypto
@@ -80,20 +80,20 @@ class SignalParser:
         
         # If no keyword entry found, try extracting price directly after BUY/SELL
         if not entry:
-            # Case 1: BUY [SYMBOL] 123.45 (New format)
-            inline_sym_pattern = r'(?:BUY|SELL|LONG|SHORT)\s+[A-Z0-9/]+\s+(\d+\.?\d*)'
+            # Case 1: BUY [SYMBOL] [EMOJI]? 123.45
+            inline_sym_pattern = r'(?:BUY|SELL|LONG|SHORT)\s+[A-Z0-9/]+\s*(?:[^\w\s])?\s*(\d+\.?\d*)'
             inline_sym_match = re.search(inline_sym_pattern, text)
             if inline_sym_match:
                 entry = inline_sym_match.group(1)
             else:
-                # Case 2: BUY 123.45
-                inline_pattern = r'(?:BUY|SELL|LONG|SHORT)\s+(\d+\.?\d*)'
+                # Case 2: BUY [EMOJI]? 123.45
+                inline_pattern = r'(?:BUY|SELL|LONG|SHORT)\s*(?:[^\w\s])?\s*(\d+\.?\d*)'
                 inline_match = re.search(inline_pattern, text)
                 if inline_match:
                     entry = inline_match.group(1)
                 else:
                     # Case 3: SYMBOL followed by a price (e.g. "XAUUSD 2050.00")
-                    fallback_pattern = r'(?:' + re.escape(symbol) + r')\s*(?:-\s*)?(\d+\.\d{2,})'
+                    fallback_pattern = r'(?:' + re.escape(symbol) + r')\s*(?:[^\w\s])?\s*(?:-)?\s*(\d+\.\d{2,})'
                     fb_match = re.search(fallback_pattern, text)
                     if fb_match:
                         entry = fb_match.group(1)
