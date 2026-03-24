@@ -35,6 +35,7 @@ class TradingEngine:
         self.active_signals = {} # map signal_id -> status
         self._recent_signals = {} # map: "SYMBOL_SIDE" -> timestamp
         self.bybit_be_applied = set() # Track symbols where BE has been applied
+        self.bybit_ts_applied = set() # Track symbols where trailing stop has been activated (after TP1)
         self.processed_pnl_trade_ids = set() # Track unique closed trade PnLs to avoid double-counting
         self.monitored_channels = config.get('channels', [])
         
@@ -510,7 +511,7 @@ class TradingEngine:
                     await self._manage_bybit_protection()
             except Exception as e:
                 self.logger.error(f"Protection monitor error: {e}")
-            await asyncio.sleep(1) # Check every second for low latency execution
+            await asyncio.sleep(5) # Check every 5 seconds — balances responsiveness vs Bybit rate limits
 
     async def _manage_mt5_protection(self):
         """Check all open MT5 positions for BE and trailing stop trigger"""
@@ -689,70 +690,101 @@ class TradingEngine:
                     continue
                 last_price = float(tickers[0]['lastPrice'])
                 
-                # --- Block 1: Independent Breakeven Logic ---
-                if symbol not in self.bybit_be_applied:
-                    be_enabled = self.config['trading'].get('be_enabled', True)
-                    
-                    if be_enabled:
-                        # Find the associated signal to get TP1
-                        signal_data = next((s for s in self.active_signals.values() if s['symbol'] == symbol or s['symbol'].replace(self.config['trading'].get('symbol_suffix', ''), '') == symbol), None)
-                        
-                        if signal_data and signal_data.get('tps'):
-                            tp1 = signal_data['tps'][0]
-                            
-                            # Check if TP1 reached
-                            tp1_reached = (side == "Buy" and last_price >= tp1) or (side == "Sell" and last_price <= tp1)
-                            
-                            if tp1_reached:
-                                be_buffer_pips = self.config['trading'].get('be_buffer', 5.0)
-                                buffer_fraction = be_buffer_pips / 10000.0
-                                
-                                if side == "Buy":
-                                    be_price = entry_price * (1 + buffer_fraction)
-                                    sl_needs_move = current_sl is None or current_sl < be_price
-                                else:  # Sell
-                                    be_price = entry_price * (1 - buffer_fraction)
-                                    sl_needs_move = current_sl is None or current_sl > be_price
-                                
-                                if sl_needs_move:
-                                    try:
-                                        self.bybit_session.set_trading_stop(
-                                            category="linear", symbol=symbol,
-                                            stopLoss=str(round(be_price, 8)),
-                                            tpslMode="Full", positionIdx=0
-                                        )
-                                        self.logger.info(f"🔒 Bybit Breakeven: {symbol} SL moved to {be_price:.8f}")
-                                        self.bybit_be_applied.add(symbol)
-                                    except Exception as e:
-                                        self.logger.error(f"Failed to move Bybit SL to breakeven for {symbol}: {e}")
-                    
-                    # --- Block 2: Trailing Stop & TP Sync ---
-                    trailing_enabled = self.config['trading'].get('trailing_enabled', True)
-                    ts_pips = self.config['trading'].get('trailing_stop_pips', 15)
-                    
-                    current_ts = float(pos.get('trailingStop', 0)) if pos.get('trailingStop') else 0.0
-                    
-                    if trailing_enabled and current_ts == 0:
+                # Locate the signal data for this symbol to access TP levels
+                signal_data = next(
+                    (s for s in self.active_signals.values()
+                     if s['symbol'] == symbol or
+                     s['symbol'].replace(self.config['trading'].get('symbol_suffix', ''), '') == symbol),
+                    None
+                )
+                tp1 = signal_data['tps'][0] if signal_data and signal_data.get('tps') else None
+                tp1_reached = (
+                    tp1 is not None and
+                    ((side == "Buy" and last_price >= tp1) or (side == "Sell" and last_price <= tp1))
+                )
+
+                # --- Block 1: Breakeven Logic (trigger on TP1) ---
+                # Move SL to breakeven + small buffer once TP1 price is touched.
+                # This is independent of the trailing stop so both can co-exist.
+                be_enabled = self.config['trading'].get('be_enabled', True)
+                if be_enabled and tp1_reached and symbol not in self.bybit_be_applied:
+                    be_buffer_pips = self.config['trading'].get('be_buffer', 5.0)
+                    buffer_fraction = be_buffer_pips / 10000.0
+
+                    if side == "Buy":
+                        be_price = entry_price * (1 + buffer_fraction)
+                        sl_needs_move = current_sl is None or current_sl < be_price
+                    else:  # Sell
+                        be_price = entry_price * (1 - buffer_fraction)
+                        sl_needs_move = current_sl is None or current_sl > be_price
+
+                    if sl_needs_move:
                         try:
-                            # If no trailing stop is set, try to add it
-                            ts_dist = entry_price * (ts_pips / 10000.0)
-                            act_pips = self.config['trading'].get('trailing_activation_pips', 10)
-                            act_price = entry_price + (entry_price * (act_pips/10000.0)) if side == "Buy" else entry_price - (entry_price * (act_pips/10000.0))
-                            
                             self.bybit_session.set_trading_stop(
                                 category="linear", symbol=symbol,
-                                trailingStop=str(round(ts_dist, 8)),
-                                activePrice=str(round(act_price, 8)),
-                                positionIdx=0
+                                stopLoss=str(round(be_price, 8)),
+                                tpslMode="Full", positionIdx=0
                             )
-                            self.logger.info(f"🚀 Synced Native Bybit TrailingStop for {symbol} (Dist: {ts_pips} pips)")
+                            self.logger.info(f"🔒 Bybit Breakeven: {symbol} SL moved to {be_price:.8f} (TP1 @ {tp1} reached)")
+                            self.bybit_be_applied.add(symbol)
                         except Exception as e:
-                            self.logger.debug(f"Failed to sync Bybit TS: {e}")
-                
+                            self.logger.error(f"Failed to move Bybit SL to breakeven for {symbol}: {e}")
+
+                # --- Block 2: Trailing Stop — activate AFTER TP1 is hit ---
+                # Strategy:
+                #   - Before TP1: no trailing stop. The original SL protects the trade.
+                #   - After TP1:  activate a native Bybit trailing stop so the remaining
+                #     position locks in profit and rides the trend as far as possible.
+                #     The activation price is set to TP1 itself so Bybit begins trailing
+                #     immediately from that level.
+                trailing_enabled = self.config['trading'].get('trailing_enabled', True)
+                ts_pips = self.config['trading'].get('trailing_stop_pips', 15)
+                current_ts = float(pos.get('trailingStop', 0)) if pos.get('trailingStop') else 0.0
+
+                if trailing_enabled and tp1_reached and symbol not in self.bybit_ts_applied:
+                    try:
+                        ts_dist = entry_price * (ts_pips / 10000.0)
+                        # Activate at TP1 price so trailing begins from profit territory
+                        activation_price = tp1
+
+                        self.bybit_session.set_trading_stop(
+                            category="linear",
+                            symbol=symbol,
+                            tpslMode="Full",
+                            trailingStop=str(round(ts_dist, 8)),
+                            activePrice=str(round(activation_price, 8)),
+                            positionIdx=0
+                        )
+                        self.logger.info(
+                            f"🚀 Bybit Trailing Stop ACTIVATED for {symbol}: "
+                            f"Distance={ts_pips} pips, Activation=TP1 @ {activation_price} "
+                            f"(current price: {last_price})"
+                        )
+                        self.bybit_ts_applied.add(symbol)
+                    except Exception as e:
+                        self.logger.error(f"Failed to set Bybit trailing stop after TP1 for {symbol}: {e}")
+
+                elif trailing_enabled and not tp1_reached and current_ts > 0 and symbol not in self.bybit_ts_applied:
+                    # Edge case: a trailing stop was set externally before TP1 was reached.
+                    # Remove it so the original SL remains in control until TP1.
+                    try:
+                        self.bybit_session.set_trading_stop(
+                            category="linear", symbol=symbol,
+                            tpslMode="Full",
+                            trailingStop="0",
+                            positionIdx=0
+                        )
+                        self.logger.info(f"⚠️ Bybit Trailing Stop removed for {symbol}: TP1 not yet reached, reverting to fixed SL")
+                    except Exception as e:
+                        self.logger.debug(f"Could not remove premature trailing stop for {symbol}: {e}")
+
             # Clean up the tracking sets: remove symbols that are no longer in active_bybit_symbols
             inactive_be = self.bybit_be_applied - active_bybit_symbols
             for sym in inactive_be:
                 self.bybit_be_applied.discard(sym)
+            inactive_ts = self.bybit_ts_applied - active_bybit_symbols
+            for sym in inactive_ts:
+                self.bybit_ts_applied.discard(sym)
                         
         except Exception as e:
             self.logger.debug(f"Bybit protection check error: {e}")
@@ -1084,6 +1116,26 @@ class TradingEngine:
                 "success": False
             })
             return
+
+        # --- FIX: Guard against incomplete signals before attempting execution ---
+        # A signal missing Entry or SL cannot be safely risk-sized. Passing None to
+        # calculate_mt5_lot / calculate_bybit_qty causes a TypeError crash.
+        if signal.get('entry') is None or signal.get('sl') is None:
+            reason = f"Missing {'Entry' if signal.get('entry') is None else 'SL'} price — cannot calculate risk"
+            self.logger.error(f"❌ Execution Aborted for {signal['symbol']}: {reason}")
+            self.trade_history.append({
+                "time": time.strftime("%H:%M:%S"),
+                "symbol": signal['symbol'],
+                "type": signal['side'],
+                "target": "--",
+                "status": f"Error: {reason}",
+                "success": False
+            })
+            self._save_state()
+            return
+
+        if not signal.get('tps'):
+            self.logger.warning(f"⚠️ No TPs found for {signal['symbol']} — signal may be incomplete, proceeding with caution")
             
         tp_mode = self.config['trading'].get('tp_mode', 'hybrid')
         self.logger.info(f"⚡ Executing {signal['symbol']} in {tp_mode.upper()} mode")
@@ -1283,39 +1335,9 @@ class TradingEngine:
                 return
 
             self.logger.info(f"✅ Bybit Main Order Placed: {symbol} {qty}")
-            
-            # --- NEW: Set Trailing Stop immediately at Entry ---
-            trailing_enabled = self.config['trading'].get('trailing_enabled', True)
-            if trailing_enabled:
-                try:
-                    entry_price = float(signal.get('entry', 0))
-                    tp1 = signal['tps'][0] if signal.get('tps') else entry_price * 1.01
-                    
-                    # Use configurable activation pips or default to 10
-                    activation_pips = self.config['trading'].get('trailing_activation_pips', 10)
-                    activation_dist = entry_price * (activation_pips / 10000.0)
-                    
-                    if side == "Buy":
-                        activation_price = entry_price + activation_dist
-                    else:
-                        activation_price = entry_price - activation_dist
-                        
-                    # Calculate trailing distance in price terms
-                    # Aligned with settings.yaml: trailing_stop_pips
-                    trailing_pips = self.config['trading'].get('trailing_stop_pips', 15)
-                    trailing_distance = entry_price * (trailing_pips / 10000.0)
-
-                    self.bybit_session.set_trading_stop(
-                        category="linear",
-                        symbol=symbol,
-                        tpslMode="Full",
-                        trailingStop=str(round(trailing_distance, 8)),
-                        activePrice=str(round(activation_price, 8)),
-                        positionIdx=0
-                    )
-                    self.logger.info(f"🚀 Native Bybit TrailingStop set for {symbol} (Activation: {activation_price:.8f}, Distance: {trailing_pips} pips)")
-                except Exception as e:
-                    self.logger.error(f"Failed to set Bybit native trailing stop at entry for {symbol}: {e}")
+            # NOTE: Trailing stop is intentionally NOT set at entry.
+            # It will be activated by _manage_bybit_protection once TP1 is hit,
+            # locking in profit while allowing the remaining position to run.
 
             # Wait for the position to settle on Bybit's side
             await asyncio.sleep(1.0)
